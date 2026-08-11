@@ -229,3 +229,70 @@ async def test_expired_slot_never_wins_even_if_a_timer_is_missed(
         ),
     )
     assert array.effective_priority() == PRI_AUTO
+
+
+async def test_lease_returns_to_current_intent_not_a_snapshot(
+    priority_entry, demo_hass, freezer
+) -> None:
+    """The claim in the README that a timer cannot match.
+
+    "On for twenty minutes" done with delay-then-turn-off hardcodes `off` as
+    the thing to go back to. A lease does not turn the light off when it
+    expires; it stops overriding, and the house resumes whatever it was already
+    trying to do. So if something else asked for the light while the override
+    was up, the light stays on.
+    """
+    # Nothing wants the light on.
+    await demo_hass.services.async_call(
+        "light", "turn_off", {"entity_id": LIGHT, "priority": PRI_AUTO}, blocking=True
+    )
+    # "On for twenty minutes."
+    await demo_hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": LIGHT, "priority": PRI_MANUAL, "priority_ttl": 1200},
+        blocking=True,
+    )
+    await demo_hass.async_block_till_done()
+    assert demo_hass.states.get(LIGHT).state == "on"
+
+    # Ten minutes in, an automation decides it wants the light on anyway.
+    await _advance(demo_hass, freezer, 600)
+    await demo_hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": LIGHT, "priority": PRI_AUTO, "brightness": 90},
+        blocking=True,
+    )
+    await demo_hass.async_block_till_done()
+
+    # The lease lapses. A delay-then-turn-off would switch it off here.
+    await _advance(demo_hass, freezer, 601)
+
+    assert demo_hass.states.get(LIGHT).state == "on", (
+        "the override ended, but the automation still wants it on"
+    )
+    assert demo_hass.states.get(LIGHT).attributes["brightness"] == 90
+    array = priority_entry.runtime_data.async_peek_array(LIGHT)
+    assert array.get(PRI_MANUAL) is None
+    assert array.effective_priority() == PRI_AUTO
+
+
+async def test_lease_goes_back_to_off_when_nothing_else_wants_it(
+    priority_entry, demo_hass, freezer
+) -> None:
+    """And the ordinary case from the README: it does go back off."""
+    await demo_hass.services.async_call(
+        "light", "turn_off", {"entity_id": LIGHT, "priority": PRI_AUTO}, blocking=True
+    )
+    await demo_hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": LIGHT, "priority": PRI_MANUAL, "priority_ttl": 1200},
+        blocking=True,
+    )
+    await demo_hass.async_block_till_done()
+    assert demo_hass.states.get(LIGHT).state == "on"
+
+    await _advance(demo_hass, freezer, 1201)
+    assert demo_hass.states.get(LIGHT).state == "off"

@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The real risk is a *future* core release breaking the internals this leans
+  # on, and you cannot test the future. A weekly run against whatever Home
+  # Assistant is current turns that into a red build within a week of the
+  # release, rather than a report from someone whose lights stopped responding.
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
 
 jobs:
   hassfest:
@@ -28,7 +35,7 @@ jobs:
           ignore: brands
 
   python:
-    name: ruff + pytest
+    name: ruff + pytest (current HA)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +45,40 @@ jobs:
       - run: pip install -r requirements-test.txt ruff
       - run: ruff check custom_components/priority
       - run: python -m pytest tests/ -q
+
+  minimum:
+    # Proves the version floor in the manifest and README is true. Right now it
+    # is the same release as `current`; it stops being redundant the moment
+    # Home Assistant moves on, and it catches accidentally reaching for an API
+    # newer than the declared minimum.
+    name: pytest (declared minimum HA)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: |
+          pip install pytest-homeassistant-custom-component==0.13.355
+          grep -v '^pytest-homeassistant-custom-component' requirements-test.txt \
+            | grep -v '^#' | grep -v '^$' | xargs -r pip install
+      - run: python -c "import homeassistant.const as c; print('HA', c.__version__)"
+      - run: python -m pytest tests/ -q
+
+  contract:
+    # The internals this integration depends on, asserted on their own. When
+    # core moves, this fails with one line naming what moved, instead of the
+    # behavioural suite failing eighty times for reasons that take an hour to
+    # read.
+    name: core internals contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install -r requirements-test.txt
+      - run: python -m pytest tests/test_core_contract.py -q
 
   frontend:
     name: card logic

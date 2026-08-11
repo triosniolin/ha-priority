@@ -37,6 +37,40 @@ there is no relinquish idiom. Level 4 would fill up and never drain, and every e
 automation had ever touched would go deaf to the UI. Arbitration has to be something you opt
 into per command, not something that accumulates behind your back.
 
+## Temporary overrides, which is the thing I actually wanted
+
+"Turn this light on for twenty minutes, then put it back" has never had a clean answer in Home
+Assistant. The usual shape is turn on, `delay`, turn off; that breaks if anything else touches
+the light meanwhile, it breaks across a restart, and it hardcodes "off" as the thing to go back
+to even when that was never true.
+
+Give the command a level and a lease instead:
+
+```yaml
+action: light.turn_on
+target:
+  entity_id: light.porch
+data:
+  priority: 3              # Manual
+  priority_ttl: "00:20:00"
+```
+
+Twenty minutes later the level clears itself and the light goes back to whatever is underneath.
+If nothing else wanted it on, that is off. If an automation had turned it on in the meantime,
+it stays on, because the automation's command was never destroyed; it was just outranked while
+the override held.
+
+That is the part a timer cannot do. The lease does not turn the light off after twenty minutes;
+it stops overriding after twenty minutes, and the house resumes whatever it was already trying
+to do. Nothing needs to remember a previous state, so nothing can restore a stale one.
+
+It survives a restart (levels 1 to 3 persist with their leases, and a lease that lapsed while
+Home Assistant was down is dropped rather than resurrected), and you can end it early with
+`priority.relinquish` or the Release button on the entity's own more-info dialog.
+
+This fell out of the priority model rather than being designed in, which is usually a sign the
+model is the right shape.
+
 ## Using it
 
 Any arbitrated service takes two extra fields:
@@ -133,6 +167,42 @@ behaves exactly like an ordinary command. The array is never re-asserted against
 standing at a light switch.
 
 ## Caveats
+
+Read these two first; they are the ones that would actually cost you something.
+
+### It rewrites the service registry
+
+For every supported service (`light.turn_on`, `lock.unlock`, `cover.set_cover_position` and
+about fifty others) this pulls the registered handler out of the live service registry and
+registers a wrapper over the same name. That is the central bet, and it rests on Home Assistant
+internals rather than public API: `async_services_internal()`, the shape of `Service`, and the
+target-resolution helpers.
+
+Those can change in any core release. The code is careful about it (a marker so a reload cannot
+double-wrap, a suspend flag so re-registering does not retrigger the registration listener,
+originals restored on unload) but careful does not help if core renames something. The realistic
+bad day is an upgrade after which supported entities stop responding, fixed by removing the
+config entry.
+
+Two things reduce that risk rather than just describing it. `tests/test_core_contract.py`
+asserts every core internal this depends on, so a break is one obvious failure naming exactly
+what moved instead of eighty confusing ones. CI runs that suite weekly against current Home
+Assistant, so a core release that breaks it shows up as a red build rather than as your lights
+going unresponsive.
+
+### A suppressed command reports success
+
+If a level is holding an entity and something lower tries to move it, the command is recorded
+and not dispatched. The service call still returns successfully. There is no error to the
+caller, so a script, a voice assistant, or a dashboard button will all look like they worked.
+
+For a light that is mildly confusing. For `lock` and `valve` it is worth thinking about before
+you enable it: a forgotten indefinite override on a lock is a genuinely bad failure mode. Either
+use `priority_ttl` so overrides expire on their own, or exclude those entities in the options
+flow. The `Active overrides` sensor and the overrides card exist to make a forgotten hold
+visible, but they only help if you look.
+
+### Everything else
 
 - The more-info row patches a compiled frontend element and has no supported API behind it. It
   is written to fail closed; if a Home Assistant update breaks it, the row stops appearing and
