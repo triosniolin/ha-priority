@@ -1,0 +1,48 @@
+relinquish:
+  target:
+    entity: {}
+  fields:
+    priority:
+      required: true
+      example: 3
+      selector:
+        number:
+          min: 1
+          max: 5
+          mode: box
+
+relinquish_all:
+  target:
+    entity: {}
+
+set:
+  target:
+    entity: {}
+  fields:
+    priority:
+      required: true
+      example: 2
+      selector:
+        number:
+          min: 1
+          max: 5
+          mode: box
+    service:
+      required: true
+      example: turn_on
+      selector:
+        text:
+    data:
+      required: false
+      example: '{"brightness": 200}'
+      selector:
+        object:
+    priority_ttl:
+      required: false
+      example: "00:30:00"
+      selector:
+        duration:
+
+get:
+  target:
+    entity: {}

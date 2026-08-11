@@ -1,0 +1,163 @@
+# Priority Command Arbitration for Home Assistant
+
+Give every command a level of authority, so a manual action and an automation can disagree
+without one silently clobbering the other.
+
+Home Assistant has no concept of *who* commanded an entity or *with what authority*. Every
+service call is a naked write: the last caller wins. There is no way to say "an automation may
+override this" versus "only an emergency may override this". The usual workarounds — guard
+booleans, capture-and-restore, mutually-aware automations — all break in the same place: if an
+automation runs *during* an override window, the state you captured is already stale.
+
+Building controls solved this decades ago with the BACnet priority array (ASHRAE 135). This is
+that idea, trimmed from sixteen levels to five, and made to fit Home Assistant.
+
+## The levels
+
+| Level | Name | Typical writer |
+|---|---|---|
+| 1 | Manual Emergency | A person, overriding everything |
+| 2 | Automatic Emergency | Life-safety automations — smoke, freeze, leak |
+| 3 | Manual | A person who does not want ordinary automations interfering |
+| 4 | Automatic | An automation that wants to hold against ordinary traffic |
+| 5 | **Default** | **Everything, unless the caller says otherwise** |
+
+The lowest-numbered occupied level drives the device. Writes at the same level simply replace
+each other.
+
+## It changes nothing until you ask it to
+
+Everything defaults to level 5, including automations. Since same-level writes replace each
+other, a house that never mentions priority behaves exactly as it does today: last command
+wins, and a person can always countermand an automation from the app.
+
+That default is deliberate and load-bearing. Splitting it — automations at 4, people at 5 — is
+the faithful BACnet reading, and it is wrong here. Home Assistant automations fire and forget;
+there is no relinquish idiom. Level 4 would fill up and never drain, and every entity an
+automation had ever touched would go deaf to the UI. Arbitration has to be something you opt
+into per command, not something that accumulates behind your back.
+
+## Using it
+
+Any arbitrated service takes two extra fields:
+
+```yaml
+action: light.turn_on
+target:
+  entity_id: light.porch
+data:
+  brightness_pct: 60
+  priority: 2            # Automatic Emergency
+  priority_ttl: "00:30:00"   # release itself after half an hour
+```
+
+Both appear as proper form fields in the automation editor, the script editor, Developer Tools
+and button tap actions — the integration rewrites the affected service descriptions at runtime.
+
+`priority_ttl` turns an override into a loan rather than a seizure. An override with no end is
+easy to issue and easy to forget, and until it is released everything below it is dead. Omit it
+(or pass `0`) to hold until something relinquishes. It is rejected at level 5, which has nothing
+underneath to fall back to.
+
+### Releasing
+
+```yaml
+action: priority.relinquish        # clear one level
+target: {entity_id: light.porch}
+data: {priority: 2}
+
+action: priority.relinquish_all    # clear every level above Default
+target: {entity_id: light.porch}
+
+action: priority.set               # write a level directly
+target: {entity_id: light.porch}
+data: {priority: 3, service: turn_on, data: {brightness: 128}}
+
+action: priority.get               # returns the full array (response service)
+target: {entity_id: light.porch}
+```
+
+Clearing a level hands control to the next one down and re-issues **that command as it stands
+right now** — not a snapshot taken when the override began. That is the failure every
+hand-rolled capture-and-restore automation eventually hits.
+
+## In the UI
+
+- **On the entity itself.** Open any supported entity's more-info dialog and a priority row
+  appears beneath the normal controls: a level picker, a lease picker, and the full array. The
+  pickers are *modifiers* — choose a level, then use the entity's ordinary controls (the toggle,
+  the brightness slider, the position handle) and those commands carry it.
+- **On the built-in tile card**, via `features: - type: custom:priority-feature`.
+- **`custom:priority-overrides-card`** — everything currently held, with one-click release.
+- **`custom:priority-control-card`** — a standalone card that issues commands at a level.
+
+The array is shown in full, so you can see what is queued underneath what is winning:
+
+```
+Manual Emergency   ON    23m left   ← driving
+Automatic          OFF   59m left
+Default            ON
+```
+
+Each override level can be released on its own. Taking, releasing and expiring an override are
+written to the entity's logbook, so the history shows what held it and when.
+
+## Supported domains
+
+`light`, `switch`, `fan`, `cover`, `climate`, `water_heater`, `humidifier`, `lock`, `valve`,
+`media_player`, `input_boolean`, `input_number`. Anything else passes through untouched.
+
+## Installation
+
+HACS → Custom repositories → add this repo as an Integration, install, restart, then add
+**Priority Command Arbitration** from Settings → Devices & Services. Or copy
+`custom_components/priority` into your config directory and restart.
+
+The dashboard card registers itself; no Lovelace resource step is needed. Hard-refresh the
+browser after installing or updating.
+
+## How it works
+
+No fork of Home Assistant is required. For each arbitrated service the integration captures the
+`Service` object already in the registry and registers a wrapper over the same name. The wrapper
+holds the arbitration decision; the captured original is the only thing that ever touches a
+device.
+
+Dispatch deliberately does **not** go back through `hass.services.async_call` — the captured
+job is invoked directly. That makes recursion structurally impossible rather than something a
+guard flag has to catch, and means one relinquish produces exactly one dispatch.
+
+Physical changes — a wall switch, a vendor app, a Zigbee group — are detected by their state
+change not matching any dispatch of ours, and recorded at Default. Touching a switch therefore
+behaves exactly like an ordinary command. The array is never re-asserted against somebody
+standing at a light switch.
+
+## Caveats
+
+- The more-info row patches a compiled frontend element and has no supported API behind it. It
+  is written to fail closed — if a Home Assistant update breaks it, the row stops appearing and
+  nothing else changes. The tile-card feature uses a supported extension point and is the
+  fallback.
+- Levels 4 and 5 are not restored across a restart. Automations re-assert on their own triggers,
+  and restoring a stale automation command would fight that. Levels 1–3 persist, leases included;
+  a lease that lapsed while Home Assistant was down is dropped rather than resurrected.
+- `entity_id: all` is passed through rather than arbitrated.
+
+## Development
+
+```bash
+python -m venv .venv && .venv/bin/pip install -r requirements-test.txt
+.venv/bin/python -m pytest tests/     # integration behaviour
+node tests/card_test.js               # frontend logic
+```
+
+Home Assistant 2026.8.1 or newer.
+
+## Status
+
+Working and in daily use, but young. Bug reports welcome.
+
+## Licence
+
+Apache 2.0, matching Home Assistant core so the code can be proposed upstream without a
+relicensing step.

@@ -1,0 +1,89 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Priority Command Arbitration",
+        "description": "Give every command a level of authority, so a manual action and an automation can disagree without one silently clobbering the other. Applies to every supported entity, but changes nothing until a service call actually asks for a priority: by default all commands share the lowest level and simply replace each other, exactly as they do today.",
+        "data": {
+          "scope": "Apply to",
+          "excluded_entities": "Never arbitrate these entities",
+          "managed_entities": "Entities (only when applying to a selection)",
+          "managed_areas": "Areas (only when applying to a selection)",
+          "managed_labels": "Labels (only when applying to a selection)",
+          "default_user_priority": "Default priority for people",
+          "default_automation_priority": "Default priority for automations and scripts",
+          "track_out_of_band": "Record wall-switch and app changes into the Default slot"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Priority arbitration is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Priority Command Arbitration",
+        "data": {
+          "scope": "Apply to",
+          "excluded_entities": "Never arbitrate these entities",
+          "managed_entities": "Entities (only when applying to a selection)",
+          "managed_areas": "Areas (only when applying to a selection)",
+          "managed_labels": "Labels (only when applying to a selection)",
+          "default_user_priority": "Default priority for people",
+          "default_automation_priority": "Default priority for automations and scripts",
+          "track_out_of_band": "Record wall-switch and app changes into the Default slot"
+        }
+      }
+    }
+  },
+  "services": {
+    "relinquish": {
+      "name": "Relinquish",
+      "description": "Clear one priority slot and hand control to the next-highest command still in force.",
+      "fields": {
+        "priority": {
+          "name": "Priority",
+          "description": "The slot to clear, 1 (Manual Emergency) to 5 (Manual Low)."
+        }
+      }
+    },
+    "relinquish_all": {
+      "name": "Relinquish all",
+      "description": "Clear every slot above Manual Low, returning the entity to ordinary control."
+    },
+    "set": {
+      "name": "Set slot",
+      "description": "Write a command into a priority slot directly, without going through the domain service.",
+      "fields": {
+        "priority": {
+          "name": "Priority",
+          "description": "The slot to write, 1 (Manual Emergency) to 5 (Manual Low)."
+        },
+        "service": {
+          "name": "Service",
+          "description": "Service name within the entity's own domain, such as turn_on."
+        },
+        "data": {
+          "name": "Data",
+          "description": "Payload for the command, such as brightness or temperature."
+        },
+        "priority_ttl": {
+          "name": "Hold for",
+          "description": "How long the slot holds before clearing itself, as seconds or a duration. Omit or use 0 to hold until relinquished. Not valid at priority 5."
+        }
+      }
+    },
+    "get": {
+      "name": "Get array",
+      "description": "Return the full priority array for each target entity."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "active_overrides": {
+        "name": "Active overrides"
+      }
+    }
+  }
+}
