@@ -5,8 +5,8 @@ without one silently clobbering the other.
 
 Home Assistant has no concept of *who* commanded an entity or *with what authority*. Every
 service call is a naked write: the last caller wins. There is no way to say "an automation may
-override this" versus "only an emergency may override this". The usual workarounds — guard
-booleans, capture-and-restore, mutually-aware automations — all break in the same place: if an
+override this" versus "only an emergency may override this". The usual workarounds (guard
+booleans, capture-and-restore, mutually-aware automations) all break in the same place: if an
 automation runs *during* an override window, the state you captured is already stale.
 
 Building controls solved this decades ago with the BACnet priority array (ASHRAE 135). This is
@@ -17,7 +17,7 @@ that idea, trimmed from sixteen levels to five, and made to fit Home Assistant.
 | Level | Name | Typical writer |
 |---|---|---|
 | 1 | Manual Emergency | A person, overriding everything |
-| 2 | Automatic Emergency | Life-safety automations — smoke, freeze, leak |
+| 2 | Automatic Emergency | Life-safety automations (smoke, freeze, leak) |
 | 3 | Manual | A person who does not want ordinary automations interfering |
 | 4 | Automatic | An automation that wants to hold against ordinary traffic |
 | 5 | **Default** | **Everything, unless the caller says otherwise** |
@@ -31,7 +31,7 @@ Everything defaults to level 5, including automations. Since same-level writes r
 other, a house that never mentions priority behaves exactly as it does today: last command
 wins, and a person can always countermand an automation from the app.
 
-That default is deliberate and load-bearing. Splitting it — automations at 4, people at 5 — is
+That default is deliberate and load-bearing. Splitting it (automations at 4, people at 5) is
 the faithful BACnet reading, and it is wrong here. Home Assistant automations fire and forget;
 there is no relinquish idiom. Level 4 would fill up and never drain, and every entity an
 automation had ever touched would go deaf to the UI. Arbitration has to be something you opt
@@ -52,7 +52,7 @@ data:
 ```
 
 Both appear as proper form fields in the automation editor, the script editor, Developer Tools
-and button tap actions — the integration rewrites the affected service descriptions at runtime.
+and button tap actions; the integration rewrites the affected service descriptions at runtime.
 
 `priority_ttl` turns an override into a loan rather than a seizure. An override with no end is
 easy to issue and easy to forget, and until it is released everything below it is dead. Omit it
@@ -78,18 +78,18 @@ target: {entity_id: light.porch}
 ```
 
 Clearing a level hands control to the next one down and re-issues **that command as it stands
-right now** — not a snapshot taken when the override began. That is the failure every
+right now**, not a snapshot taken when the override began. That is the failure every
 hand-rolled capture-and-restore automation eventually hits.
 
 ## In the UI
 
 - **On the entity itself.** Open any supported entity's more-info dialog and a priority row
   appears beneath the normal controls: a level picker, a lease picker, and the full array. The
-  pickers are *modifiers* — choose a level, then use the entity's ordinary controls (the toggle,
+  pickers are *modifiers*; choose a level, then use the entity's ordinary controls (the toggle,
   the brightness slider, the position handle) and those commands carry it.
 - **On the built-in tile card**, via `features: - type: custom:priority-feature`.
-- **`custom:priority-overrides-card`** — everything currently held, with one-click release.
-- **`custom:priority-control-card`** — a standalone card that issues commands at a level.
+- **`custom:priority-overrides-card`**: everything currently held, with one-click release.
+- **`custom:priority-control-card`**: a standalone card that issues commands at a level.
 
 The array is shown in full, so you can see what is queued underneath what is winning:
 
@@ -123,11 +123,11 @@ No fork of Home Assistant is required. For each arbitrated service the integrati
 holds the arbitration decision; the captured original is the only thing that ever touches a
 device.
 
-Dispatch deliberately does **not** go back through `hass.services.async_call` — the captured
+Dispatch deliberately does **not** go back through `hass.services.async_call`; the captured
 job is invoked directly. That makes recursion structurally impossible rather than something a
 guard flag has to catch, and means one relinquish produces exactly one dispatch.
 
-Physical changes — a wall switch, a vendor app, a Zigbee group — are detected by their state
+Physical changes (a wall switch, a vendor app, a Zigbee group) are detected by their state
 change not matching any dispatch of ours, and recorded at Default. Touching a switch therefore
 behaves exactly like an ordinary command. The array is never re-asserted against somebody
 standing at a light switch.
@@ -135,14 +135,14 @@ standing at a light switch.
 ## Caveats
 
 - The more-info row patches a compiled frontend element and has no supported API behind it. It
-  is written to fail closed — if a Home Assistant update breaks it, the row stops appearing and
+  is written to fail closed; if a Home Assistant update breaks it, the row stops appearing and
   nothing else changes. The tile-card feature uses a supported extension point and is the
   fallback.
 - Levels 4 and 5 are not restored across a restart. Automations re-assert on their own triggers,
-  and restoring a stale automation command would fight that. Levels 1–3 persist, leases included;
+  and restoring a stale automation command would fight that. Levels 1-3 persist, leases included;
   a lease that lapsed while Home Assistant was down is dropped rather than resurrected.
 - **`entity_id: all` is arbitrated.** A goodnight scene or an "all off" sweep will *not* defeat
-  your overrides — held entities are skipped, everything else is switched normally. This was not
+  your overrides (held entities are skipped, everything else is switched normally). This was not
   true before 2026-08-11, when `all` silently bypassed arbitration entirely.
 
 ## Development
