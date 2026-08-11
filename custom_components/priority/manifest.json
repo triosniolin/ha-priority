@@ -1,9 +1,9 @@
 {
   "domain": "priority",
   "name": "Priority Command Arbitration",
+  "after_dependencies": ["frontend", "http"],
   "codeowners": ["@triosniolin"],
   "config_flow": true,
-  "after_dependencies": ["frontend", "http"],
   "documentation": "https://github.com/triosniolin/ha-priority",
   "integration_type": "system",
   "iot_class": "local_push",

@@ -21,6 +21,11 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+          # Brands listing is a requirement of the HACS *default* store, which
+          # needs a PR to home-assistant/brands. Installing this as a custom
+          # repository does not require it, so the check is noise until that
+          # PR lands.
+          ignore: brands
 
   python:
     name: ruff + pytest
