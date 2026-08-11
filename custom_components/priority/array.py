@@ -1,7 +1,7 @@
 """The priority array itself.
 
 A commandable entity gets one array of five slots. Slot index 0 is PRI 1
-(Manual Emergency), index 4 is PRI 5 (Manual Low). The highest-priority
+(Manual Emergency), index 4 is PRI 5 (Default). The highest-priority
 non-empty slot is the *effective* command: the one that should currently be
 driving the device.
 
@@ -205,8 +205,9 @@ class PriorityArray:
         """Serialise only the slots that should survive a restart.
 
         Slot 5 tracks physical reality, which may have moved while Home
-        Assistant was down, so it is re-derived from live state on start rather
-        than restored. Slot 4 is not persisted either: an automation that wants
+        Assistant was down. It is therefore not restored at all - and, note,
+        not re-derived either: see the comment in store.py explaining why
+        seeding it from live state is a command nobody issued. Slot 4 is not persisted either: an automation that wants
         its command to survive a restart will re-assert it on its own triggers,
         and restoring a stale automation command would fight that.
         """

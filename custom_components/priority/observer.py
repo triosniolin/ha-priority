@@ -5,7 +5,7 @@ change a device with no Home Assistant service call behind it. Without this the
 array would quietly lie: it would claim a command is in force while the device
 sits somewhere else entirely.
 
-The rule chosen here is that an unexplained change is treated as a Manual Low
+The rule chosen here is that an unexplained change is treated as a Default-level
 write. Touching a switch on the wall then means exactly what commanding at
 priority 5 means - it takes effect, and any automation is free to override it.
 

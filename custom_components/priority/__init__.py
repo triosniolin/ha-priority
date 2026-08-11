@@ -168,6 +168,25 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         _LOGGER.exception("Priority could not register its dashboard card")
 
 
+@callback
+def _async_unregister_frontend(hass: HomeAssistant) -> None:
+    """Stop serving the card when the integration is removed.
+
+    The static path cannot be unregistered, but the module URL can. Without
+    this, removing the integration left the card JS loading on every frontend
+    page until the next restart - and the flag stayed set, so a re-add in the
+    same session skipped registration entirely.
+    """
+    if not hass.data.pop(_FRONTEND_REGISTERED, False):
+        return
+    try:
+        from homeassistant.components.frontend import remove_extra_js_url
+
+        remove_extra_js_url(hass, _CARD_URL)
+    except Exception:
+        _LOGGER.debug("Priority could not unregister its card", exc_info=True)
+
+
 async def _async_update_options(
     hass: HomeAssistant, entry: PriorityConfigEntry
 ) -> None:
@@ -191,5 +210,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: PriorityConfigEntry) ->
     async_restore_descriptions(hass, manager)
     async_unwrap_all(hass, manager)
     async_unregister_services(hass)
+    _async_unregister_frontend(hass)
     await manager.async_save()
     return True

@@ -23,7 +23,7 @@ from custom_components.priority.const import (
 
 from . import mocks
 
-TEST_DOMAINS = ("light", "switch", "climate", "cover")
+TEST_DOMAINS = ("light", "switch", "climate", "cover", "fan")
 
 
 @pytest.fixture(autouse=True)

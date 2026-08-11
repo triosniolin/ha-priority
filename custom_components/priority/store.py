@@ -23,6 +23,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.const import ATTR_ENTITY_ID, EVENT_LOGBOOK_ENTRY, STATE_ON
 from homeassistant.core import Context, HomeAssistant, Service, ServiceCall, callback
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.storage import Store
@@ -469,6 +470,30 @@ class PriorityManager:
         return when_on if state is not None and state.state == STATE_ON else when_off
 
     @callback
+    def async_validate_command(
+        self, domain: str, service: str, entity_id: str, data: dict[str, Any]
+    ) -> None:
+        """Raise if this payload could never be dispatched.
+
+        A slot is written before anything is driven, and it wins arbitration
+        whether or not the dispatch succeeds. So an undispatchable command does
+        not fail loudly - it takes control and holds it, with nothing driving
+        the device and every level below it dead. Validating up front turns
+        that silent black hole into an error the caller sees.
+        """
+        original = self.async_get_original(domain, service)
+        schema = original.schema if original is not None else None
+        if schema is None:
+            return
+        try:
+            schema({**data, ATTR_ENTITY_ID: [entity_id]})
+        except vol.Invalid as err:
+            raise ServiceValidationError(
+                f"{domain}.{service} would not accept this data for "
+                f"{entity_id}: {err}"
+            ) from err
+
+    @callback
     def async_make_slot(
         self,
         domain: str,
@@ -620,11 +645,25 @@ class PriorityManager:
                 payload = original.schema(payload)
             except vol.Invalid:
                 _LOGGER.exception(
-                    "Priority dispatch built an invalid payload for %s.%s on %s",
+                    "Priority dispatch built an invalid payload for %s.%s on %s; "
+                    "dropping the slot at priority %s rather than letting it hold "
+                    "control of a device it cannot drive",
                     domain,
                     service,
                     targets,
+                    priority,
                 )
+                # Belt and braces behind async_validate_command. A slot that
+                # cannot be dispatched must not keep winning arbitration:
+                # it would sit there driving nothing while everything below it
+                # stayed suppressed. Give control back instead.
+                for entity_id in targets:
+                    array = self.async_peek_array(entity_id)
+                    if array is None or array.get(priority) is None:
+                        continue
+                    array.clear(priority)
+                    self.async_cancel_timer(entity_id, priority)
+                    self.async_notify(entity_id)
                 return
 
         service_call = ServiceCall(

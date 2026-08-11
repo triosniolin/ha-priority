@@ -185,10 +185,18 @@ def _build_wrapper(
             """Run the original handler, optionally narrowed to some entities."""
             if entity_ids is None:
                 # Nothing to re-target, so reuse the already-validated payload.
+                #
+                # Both our added fields must come off. Core's
+                # remove_entity_service_fields only strips
+                # cv.ENTITY_SERVICE_FIELDS, so anything left here is handed to
+                # the entity method as a keyword argument. Domains whose
+                # handlers take **kwargs (cover, climate) swallow it silently;
+                # ones with a strict signature do not - fan.set_percentage
+                # raises TypeError on an otherwise ordinary call.
                 data = {
                     key: value
                     for key, value in call.data.items()
-                    if key not in (ATTR_PRIORITY, _RAW_KEY)
+                    if key not in (ATTR_PRIORITY, ATTR_PRIORITY_TTL, _RAW_KEY)
                 }
             else:
                 # Re-targeting means re-validating, because some domains rewrite
@@ -207,7 +215,7 @@ def _build_wrapper(
                 data = {
                     key: value
                     for key, value in data.items()
-                    if key not in (ATTR_PRIORITY, _RAW_KEY)
+                    if key not in (ATTR_PRIORITY, ATTR_PRIORITY_TTL, _RAW_KEY)
                 }
             forwarded = ServiceCall(
                 hass, domain, service, data, call.context, call.return_response
@@ -240,8 +248,9 @@ def _build_wrapper(
         ttl = _ttl_seconds(call.data.get(ATTR_PRIORITY_TTL))
         if ttl is not None and priority == MAX_PRIORITY:
             raise ServiceValidationError(
-                "priority_ttl is not valid at priority 5 (Manual Low): it is the "
-                "lowest level, so there is nothing for it to expire back to"
+                f"priority_ttl is not valid at priority {MAX_PRIORITY} "
+                f"({PRIORITY_NAMES[MAX_PRIORITY]}): it is the lowest level, so "
+                "there is nothing for it to expire back to"
             )
 
         # Group by the service each entity resolves to, because `toggle` can

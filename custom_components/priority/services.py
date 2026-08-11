@@ -100,7 +100,7 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
                 await manager.async_drive_effective(entity_id, call.context)
 
     async def _relinquish_all(call: ServiceCall) -> None:
-        """Clear every slot above Manual Low and re-drive what is left."""
+        """Clear every slot above Default and re-drive what is left."""
         for entity_id in _targets(hass, call):
             array = manager.async_peek_array(entity_id)
             if array is None:
@@ -131,11 +131,18 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
         ) or None
         if ttl is not None and priority == MAX_PRIORITY:
             raise ServiceValidationError(
-                "priority_ttl is not valid at priority 5 (Manual Low): it is the "
-                "lowest level, so there is nothing for it to expire back to"
+                f"priority_ttl is not valid at priority {MAX_PRIORITY} "
+                f"({PRIORITY_NAMES[MAX_PRIORITY]}): it is the lowest level, so "
+                "there is nothing for it to expire back to"
             )
 
-        for entity_id in _targets(hass, call):
+        targets = _targets(hass, call)
+
+        # Validate every target before writing any slot. Raising part-way
+        # through the loop below left the entities already processed holding
+        # new slots while the caller saw only an error, which is the worst of
+        # both outcomes.
+        for entity_id in targets:
             if not manager.async_is_managed(entity_id):
                 raise ServiceValidationError(
                     f"{entity_id} is not under priority arbitration"
@@ -145,6 +152,15 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
                 raise ServiceValidationError(
                     f"{domain}.{service} is not an arbitrated service"
                 )
+            # And validate the payload, because a slot that cannot be
+            # dispatched still wins arbitration - it would hold control
+            # indefinitely with nothing driving the device, and everything
+            # below it dead. A typo'd field here used to create exactly that
+            # black hole, silently.
+            manager.async_validate_command(domain, service, entity_id, data)
+
+        for entity_id in targets:
+            domain = entity_id.split(".", 1)[0]
             resolved = manager.async_resolve_service(domain, service, entity_id)
             array = manager.async_get_array(entity_id)
             takes_control = array.wins(priority)

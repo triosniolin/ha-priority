@@ -2,7 +2,7 @@
 
 Scope defaults to every supported entity, so one diagnostic entity per managed
 entity would mean hundreds of near-empty entities. Instead this reports only
-the entities where something above Manual Low currently holds control - which
+the entities where something above Default currently holds control - which
 is exactly the set worth looking at on a dashboard.
 """
 
@@ -31,7 +31,7 @@ async def async_setup_entry(
 
 
 class PriorityOverrideSensor(SensorEntity):
-    """Counts entities currently held by something above Manual Low."""
+    """Counts entities currently held by something above Default."""
 
     _attr_has_entity_name = True
     _attr_name = "Active overrides"

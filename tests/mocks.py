@@ -17,6 +17,7 @@ from homeassistant.components.climate import (
     HVACMode,
 )
 from homeassistant.components.cover import CoverEntity, CoverEntityFeature
+from homeassistant.components.fan import FanEntity, FanEntityFeature
 from homeassistant.components.light import ATTR_BRIGHTNESS, ColorMode, LightEntity
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import UnitOfTemperature
@@ -145,6 +146,24 @@ class MockCover(CoverEntity):
         self.async_write_ha_state()
 
 
+class MockFan(FanEntity):
+    """A fan. Its `async_set_percentage(self, percentage)` has a strict
+    signature, unlike cover/climate which take **kwargs - so it is the domain
+    that actually catches a stray key leaking through to the handler."""
+
+    _attr_should_poll = False
+    _attr_supported_features = FanEntityFeature.SET_SPEED
+
+    def __init__(self, name: str) -> None:
+        self._attr_name = name
+        self._attr_unique_id = f"mock_fan_{name}"
+        self._attr_percentage = 0
+
+    async def async_set_percentage(self, percentage: int) -> None:
+        self._attr_percentage = percentage
+        self.async_write_ha_state()
+
+
 ENTITIES: dict[str, list] = {}
 
 
@@ -155,6 +174,7 @@ def build(domain: str) -> list:
         "switch": lambda: [MockSwitch("one")],
         "climate": lambda: [MockClimate("one")],
         "cover": lambda: [MockCover("one")],
+        "fan": lambda: [MockFan("one")],
     }
     ENTITIES[domain] = factories[domain]()
     return ENTITIES[domain]
