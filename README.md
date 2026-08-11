@@ -141,7 +141,9 @@ standing at a light switch.
 - Levels 4 and 5 are not restored across a restart. Automations re-assert on their own triggers,
   and restoring a stale automation command would fight that. Levels 1–3 persist, leases included;
   a lease that lapsed while Home Assistant was down is dropped rather than resurrected.
-- `entity_id: all` is passed through rather than arbitrated.
+- **`entity_id: all` is arbitrated.** A goodnight scene or an "all off" sweep will *not* defeat
+  your overrides — held entities are skipped, everything else is switched normally. This was not
+  true before 2026-08-11, when `all` silently bypassed arbitration entirely.
 
 ## Development
 

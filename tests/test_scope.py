@@ -5,6 +5,7 @@ from __future__ import annotations
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.priority.const import (
+    PRI_DEFAULT,
     CONF_EXCLUDED_ENTITIES,
     CONF_MANAGED_ENTITIES,
     CONF_SCOPE,
@@ -169,3 +170,163 @@ async def test_options_update_reapplies_scope(demo_hass) -> None:
 
     await _block(demo_hass, OTHER)
     assert demo_hass.states.get(OTHER).state == "off"
+
+
+# ----------------------------------------------------------------------
+# entity_id: all
+#
+# This bypassed arbitration entirely until 2026-08-11. A post-restart
+# `light.turn_off` / `entity_id: all` sweep drove a Manual hold straight
+# through, with no error and no change to the array - which then went on
+# reporting it was in control of a light that was off.
+# ----------------------------------------------------------------------
+
+
+async def test_all_does_not_defeat_a_held_slot(demo_hass) -> None:
+    """The regression test for the live failure."""
+    await _entry(demo_hass, {CONF_SCOPE: SCOPE_ALL})
+
+    await demo_hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": LIGHT, "priority": PRI_MANUAL},
+        blocking=True,
+    )
+    await demo_hass.async_block_till_done()
+    assert demo_hass.states.get(LIGHT).state == "on"
+
+    # The sweep that broke it.
+    await demo_hass.services.async_call(
+        "light", "turn_off", {"entity_id": "all"}, blocking=True
+    )
+    await demo_hass.async_block_till_done()
+
+    assert demo_hass.states.get(LIGHT).state == "on", "the hold must survive `all`"
+    # ...and the unheld light in the same sweep must still be switched off.
+    assert demo_hass.states.get(OTHER).state == "off"
+
+
+async def test_all_still_reaches_excluded_entities(demo_hass) -> None:
+    """Excluded entities are not arbitrated, so a sweep must still reach them.
+
+    Resolving `all` to the *managed* set would silently drop them from the
+    sweep - arbitration would be protecting an entity it was told to ignore.
+    """
+    await _entry(
+        demo_hass, {CONF_SCOPE: SCOPE_ALL, CONF_EXCLUDED_ENTITIES: [OTHER]}
+    )
+
+    await demo_hass.services.async_call(
+        "light", "turn_on", {"entity_id": [LIGHT, OTHER]}, blocking=True
+    )
+    await demo_hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": LIGHT, "priority": PRI_MANUAL},
+        blocking=True,
+    )
+    await demo_hass.async_block_till_done()
+
+    await demo_hass.services.async_call(
+        "light", "turn_off", {"entity_id": "all"}, blocking=True
+    )
+    await demo_hass.async_block_till_done()
+
+    assert demo_hass.states.get(LIGHT).state == "on", "held, must survive"
+    assert demo_hass.states.get(OTHER).state == "off", "excluded, must be swept"
+
+
+async def test_all_is_recorded_in_the_array(demo_hass) -> None:
+    """A sweep is a command like any other and belongs in the array."""
+    entry = await _entry(demo_hass, {CONF_SCOPE: SCOPE_ALL})
+
+    await demo_hass.services.async_call(
+        "light", "turn_off", {"entity_id": "all"}, blocking=True
+    )
+    await demo_hass.async_block_till_done()
+
+    array = entry.runtime_data.async_peek_array(LIGHT)
+    assert array is not None
+    assert array.get(PRI_DEFAULT).service == "turn_off"
+
+
+async def test_all_is_domain_scoped(demo_hass) -> None:
+    """`light.turn_off` with `all` must not touch other domains."""
+    entry = await _entry(demo_hass, {CONF_SCOPE: SCOPE_ALL})
+
+    await demo_hass.services.async_call(
+        "switch", "turn_on", {"entity_id": "switch.one"}, blocking=True
+    )
+    await demo_hass.async_block_till_done()
+
+    await demo_hass.services.async_call(
+        "light", "turn_off", {"entity_id": "all"}, blocking=True
+    )
+    await demo_hass.async_block_till_done()
+
+    assert demo_hass.states.get("switch.one").state == "on", "switch untouched"
+    assert entry.runtime_data.async_peek_array("switch.one").get(
+        PRI_DEFAULT
+    ).service == "turn_on", "switch array untouched by a light sweep"
+
+
+async def test_all_at_default_does_not_churn_the_sensor(demo_hass) -> None:
+    """A sweep arrives at Default, which must stay on the silent path."""
+    entry = await _entry(demo_hass, {CONF_SCOPE: SCOPE_ALL})
+    seen: list[str] = []
+    entry.runtime_data.async_add_listener(seen.append)
+
+    for _ in range(3):
+        await demo_hass.services.async_call(
+            "light", "turn_off", {"entity_id": "all"}, blocking=True
+        )
+        await demo_hass.services.async_call(
+            "light", "turn_on", {"entity_id": "all"}, blocking=True
+        )
+    await demo_hass.async_block_till_done()
+
+    assert seen == [], "Default-level sweeps must not write the diagnostic sensor"
+
+
+async def test_entity_id_none_targets_nothing(demo_hass) -> None:
+    """`none` is the opposite of `all`, and was previously conflated with it."""
+    entry = await _entry(demo_hass, {CONF_SCOPE: SCOPE_ALL})
+
+    await demo_hass.services.async_call(
+        "light", "turn_on", {"entity_id": [LIGHT, OTHER]}, blocking=True
+    )
+    await demo_hass.async_block_till_done()
+
+    await demo_hass.services.async_call(
+        "light", "turn_off", {"entity_id": "none"}, blocking=True
+    )
+    await demo_hass.async_block_till_done()
+
+    assert demo_hass.states.get(LIGHT).state == "on", "nothing dispatched"
+    assert demo_hass.states.get(OTHER).state == "on"
+
+
+async def test_homeassistant_turn_off_is_also_arbitrated(demo_hass) -> None:
+    """The asymmetry that made the bypass indefensible.
+
+    `homeassistant.turn_off` expands to per-domain calls with a concrete entity
+    list, so it was always arbitrated. `light.turn_off` with `all` was not.
+    Same intent, opposite outcome, depending only on which service you reached
+    for. Both must now hold.
+    """
+    await _entry(demo_hass, {CONF_SCOPE: SCOPE_ALL})
+
+    await demo_hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": LIGHT, "priority": PRI_MANUAL},
+        blocking=True,
+    )
+    await demo_hass.async_block_till_done()
+
+    await demo_hass.services.async_call(
+        "homeassistant", "turn_off", {"entity_id": LIGHT}, blocking=True
+    )
+    await demo_hass.async_block_till_done()
+
+    assert demo_hass.states.get(LIGHT).state == "on"

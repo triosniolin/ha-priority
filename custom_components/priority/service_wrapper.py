@@ -123,25 +123,49 @@ def _extend_schema(schema: Any) -> Any:
 
 
 @callback
-def _resolve_targets(hass: HomeAssistant, call: ServiceCall) -> list[str] | None:
+def _resolve_targets(hass: HomeAssistant, call: ServiceCall) -> list[str]:
     """Resolve a call's target selection to concrete entity ids.
 
-    Returns ``None`` when the call targets everything, which we decline to
-    arbitrate - ``entity_id: all`` is a blunt instrument and silently writing
-    every array in the house from one call would be worse than passing it
-    through.
+    ``entity_id: all`` is resolved rather than waved through. An earlier version
+    bailed out here on the grounds that arbitrating `all` meant "writing every
+    array in the house", which was simply wrong: core resolves the sentinel
+    inside ``entity_service_call`` against *that platform's* entities, so
+    ``light.turn_off`` with `all` reaches lights and nothing else. The bail-out
+    meant any hold - including a safety interlock at priority 2 - could be
+    driven straight through with no error and no trace. Confirmed live: a
+    post-restart `light.turn_off` / `entity_id: all` sweep defeated a Manual
+    hold while the array went on reporting it was in control.
+
+    It was also inconsistent. `homeassistant.turn_off` expands to per-domain
+    calls carrying a concrete entity list, so the same user intent was
+    arbitrated or bypassed depending only on which service the caller reached
+    for.
+
+    The full domain is returned, **not** ``async_managed_entities()``: the
+    caller splits managed from unmanaged and forwards the remainder, and
+    pre-filtering here would silently drop excluded entities from the sweep
+    altogether.
+
+    Resolution failures are deliberately **not** caught. Passing a call through
+    when we cannot tell what it targets is precisely the silent-override-defeat
+    this method exists to prevent; a visible error is recoverable, a quietly
+    ignored hold is not. With pre-validated call data this path is effectively
+    unreachable.
     """
     entity_id = call.data.get(ATTR_ENTITY_ID)
-    if entity_id in (ENTITY_MATCH_ALL, ENTITY_MATCH_NONE):
-        return None
-    try:
-        selection = target_helpers.TargetSelection(call.data)
-        selected = target_helpers.async_extract_referenced_entity_ids(
-            hass, selection, True
-        )
-    except Exception:
-        _LOGGER.exception("Priority could not resolve targets for %s", call)
-        return None
+
+    if entity_id == ENTITY_MATCH_NONE:
+        # `none` means target nothing - the opposite of `all`, and previously
+        # conflated with it.
+        return []
+
+    if entity_id == ENTITY_MATCH_ALL:
+        return sorted(state.entity_id for state in hass.states.async_all(call.domain))
+
+    selection = target_helpers.TargetSelection(call.data)
+    selected = target_helpers.async_extract_referenced_entity_ids(
+        hass, selection, True
+    )
     return sorted(selected.referenced | selected.indirectly_referenced)
 
 
@@ -192,13 +216,14 @@ def _build_wrapper(
             return await task if task is not None else None
 
         targets = _resolve_targets(hass, call)
-        if targets is None:
-            return await _passthrough()
 
         managed = [
             entity_id for entity_id in targets if manager.async_is_managed(entity_id)
         ]
-        unmanaged = [entity_id for entity_id in targets if entity_id not in set(managed)]
+        managed_set = set(managed)
+        unmanaged = [
+            entity_id for entity_id in targets if entity_id not in managed_set
+        ]
 
         if not managed:
             return await _passthrough()
