@@ -217,8 +217,15 @@ visible, but they only help if you look.
 - Every override level (1 to 4) is restored across a restart, leases included; a lease that lapsed
   while Home Assistant was down is dropped rather than resurrected. Level 5 is not restored, since
   it is ordinary last-wins traffic and a stored copy of it would be a claim about physical reality
-  that may have moved while Home Assistant was down. A restored slot suppresses everything below it
-  but is not re-driven at startup; nothing is, deliberately.
+  that may have moved while Home Assistant was down.
+- A restored hold at level 1 or 2 is re-issued once, about half a minute after startup finishes.
+  Nothing else is. While Home Assistant is running the array is never re-asserted against reality,
+  but a restart is the one case that rule does not cover honestly: a change during downtime was
+  observed by nobody, so a power blip that returned a relay to its default looks identical to a
+  person deciding something. At emergency levels that is worth one command; at levels 3 and 4 it is
+  not, because "do not let automations interfere" is a weaker claim than "this must be true", and
+  silently re-commanding a device on every boot is too surprising to do on your behalf. Entities
+  still unavailable at that point are skipped and picked up when they return.
 - **`entity_id: all` is arbitrated.** A goodnight scene or an "all off" sweep will *not* defeat
   your overrides (held entities are skipped, everything else is switched normally). This was not
   true before 2026-08-11, when `all` silently bypassed arbitration entirely.

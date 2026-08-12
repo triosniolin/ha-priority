@@ -277,6 +277,36 @@ async def test_restored_level_4_still_outranks_default_traffic(
     assert array.effective_priority() == PRI_AUTO
 
 
+async def test_restored_holds_are_visible_as_overrides(
+    demo_hass, entry_options
+) -> None:
+    """The override set is a derived index and has to be rebuilt on load.
+
+    It is maintained incrementally by async_notify so the hot path never scans
+    every array, but restoring from storage bypasses that path completely. Left
+    unrebuilt, a hold that survived the restart was invisible: sensor
+    .active_overrides reported 0, and the overrides card showed nothing, until
+    some later command happened to touch the same entity.
+    """
+    entry = MockConfigEntry(domain=DOMAIN, options=entry_options, unique_id=DOMAIN)
+    entry.add_to_hass(demo_hass)
+    assert await demo_hass.config_entries.async_setup(entry.entry_id)
+    await demo_hass.async_block_till_done()
+
+    entry.runtime_data.async_write_slot(
+        LIGHT, PRI_MANUAL, Slot("light", "turn_on", {}, dt_util.utcnow())
+    )
+    await entry.runtime_data.async_save()
+
+    assert await demo_hass.config_entries.async_unload(entry.entry_id)
+    await demo_hass.async_block_till_done()
+    assert await demo_hass.config_entries.async_setup(entry.entry_id)
+    await demo_hass.async_block_till_done()
+
+    assert entry.runtime_data.async_overridden() == frozenset({LIGHT})
+    assert demo_hass.states.get("sensor.active_overrides").state == "1"
+
+
 async def test_lapsed_lease_is_dropped_on_restart(
     demo_hass, entry_options, freezer: FrozenDateTimeFactory
 ) -> None:

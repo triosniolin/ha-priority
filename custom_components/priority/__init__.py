@@ -51,6 +51,7 @@ from homeassistant.helpers import entity_registry as er
 from .const import ARBITRATED_SERVICES
 from .descriptions import async_patch_descriptions, async_restore_descriptions
 from .observer import async_start_observer
+from .reconcile import async_schedule_startup_reconcile
 from .service_wrapper import (
     async_unwrap_all,
     async_unwrap_service,
@@ -116,6 +117,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: PriorityConfigEntry) -> 
     await async_patch_descriptions(hass, manager)
     await _async_register_frontend(hass)
     entry.async_on_unload(async_start_observer(hass, manager))
+    # Levels 1-3 (and now 4) come back from storage, but nothing re-drives them:
+    # while running, the array is never re-asserted against reality. A restart
+    # is the one gap in that rule, since a change during downtime was observed
+    # by nobody. Emergency levels only - see reconcile.py.
+    entry.async_on_unload(async_schedule_startup_reconcile(hass, manager))
     entry.async_on_unload(entry.add_update_listener(_async_update_options))
     entry.async_on_unload(manager.async_shutdown_timers)
 

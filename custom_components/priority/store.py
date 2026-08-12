@@ -707,7 +707,24 @@ class PriorityManager:
             array = PriorityArray.from_storage(entity_id, stored)
             if not array.is_empty():
                 self._arrays[entity_id] = array
-        _LOGGER.debug("Restored %s priority arrays", len(self._arrays))
+
+        # The override set is a derived index, maintained incrementally by
+        # async_notify to keep the hot path off a full scan. Restoring arrays
+        # bypasses that path entirely, so it has to be rebuilt here or every
+        # restored hold is invisible: the sensor under-reports, and anything
+        # that asks "what is currently overridden" gets an empty answer until
+        # the next command happens to touch that entity.
+        self._override_set = frozenset(
+            entity_id
+            for entity_id, array in self._arrays.items()
+            if (held := array.effective_priority()) is not None
+            and held < PRI_DEFAULT
+        )
+        _LOGGER.debug(
+            "Restored %s priority arrays, %s of them overridden",
+            len(self._arrays),
+            len(self._override_set),
+        )
 
     @callback
     def _data_to_save(self) -> dict[str, Any]:

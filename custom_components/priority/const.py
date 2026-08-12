@@ -117,6 +117,12 @@ SERVICE_GET: Final = "get"
 # How long a dispatched context id stays attributable before the observer
 # treats a resulting state change as out-of-band. Generous enough to cover a
 # slow cloud round trip (LG ThinQ takes 2-3 minutes) without growing unbounded.
+# How long after startup completes before emergency holds are reconciled. Long
+# enough for a device that is still handshaking to report in, short enough that
+# a genuinely stale emergency override is not left standing. Anything still
+# unavailable when it fires is skipped and handled by the observer instead.
+RECONCILE_DELAY_SECONDS: Final = 30
+
 CONTEXT_TTL_SECONDS: Final = 300
 CONTEXT_MAP_MAX_ENTRIES: Final = 2048
 
