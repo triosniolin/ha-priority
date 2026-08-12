@@ -196,7 +196,15 @@ async def test_unavailable_transition_is_not_recorded_as_manual(
 
 
 async def test_high_slots_survive_a_restart(demo_hass, entry_options) -> None:
-    """Slots 1-3 restore; 4 and 5 are deliberately re-derived, not restored."""
+    """Every override level restores; only slot 5 is deliberately re-derived.
+
+    Level 4 used to be dropped here, on the reasoning that an automation
+    re-asserts on its own triggers. An automation that fires on an edge (a peak
+    window opening, a threshold crossing) has no trigger to re-fire after a
+    reboot, so dropping its slot handed control back to whatever it was
+    deliberately overriding. Nothing reaches level 4 without a caller asking
+    for it by name, so it is as much a statement of intent as level 3.
+    """
     entry = MockConfigEntry(domain=DOMAIN, options=entry_options, unique_id=DOMAIN)
     entry.add_to_hass(demo_hass)
     assert await demo_hass.config_entries.async_setup(entry.entry_id)
@@ -221,7 +229,52 @@ async def test_high_slots_survive_a_restart(demo_hass, entry_options) -> None:
 
     restored = entry.runtime_data.async_peek_array(LIGHT)
     assert restored.get(PRI_MANUAL).data == {"brightness": 77}
-    assert restored.get(PRI_AUTO) is None
+    assert restored.get(PRI_AUTO).service == "turn_off"
+    assert restored.get(PRI_DEFAULT) is None
+
+
+async def test_restored_level_4_still_outranks_default_traffic(
+    demo_hass, entry_options
+) -> None:
+    """The point of persisting level 4: it keeps suppressing after a reboot.
+
+    A restored slot is not re-driven at startup (nothing is), so the proof that
+    it survived meaningfully is that the next Default-level command is recorded
+    and not dispatched, exactly as it would have been before the restart.
+    """
+    entry = MockConfigEntry(domain=DOMAIN, options=entry_options, unique_id=DOMAIN)
+    entry.add_to_hass(demo_hass)
+    assert await demo_hass.config_entries.async_setup(entry.entry_id)
+    await demo_hass.async_block_till_done()
+
+    await demo_hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": LIGHT, "brightness": 200, "priority": PRI_AUTO},
+        blocking=True,
+    )
+    await entry.runtime_data.async_save()
+
+    assert await demo_hass.config_entries.async_unload(entry.entry_id)
+    await demo_hass.async_block_till_done()
+    assert await demo_hass.config_entries.async_setup(entry.entry_id)
+    await demo_hass.async_block_till_done()
+
+    manager = entry.runtime_data
+    assert manager.async_peek_array(LIGHT).effective_priority() == PRI_AUTO
+
+    # An ordinary command, the kind a person or an unqualified automation
+    # issues. It must lose to the restored hold rather than sail through.
+    before = demo_hass.states.get(LIGHT).state
+    await demo_hass.services.async_call(
+        "light", "turn_off", {"entity_id": LIGHT}, blocking=True
+    )
+    await demo_hass.async_block_till_done()
+
+    assert demo_hass.states.get(LIGHT).state == before
+    array = manager.async_peek_array(LIGHT)
+    assert array.get(PRI_DEFAULT).service == "turn_off"
+    assert array.effective_priority() == PRI_AUTO
 
 
 async def test_lapsed_lease_is_dropped_on_restart(

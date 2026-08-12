@@ -202,14 +202,12 @@ class PriorityArray:
         }
 
     def to_storage(self) -> dict[str, Any]:
-        """Serialise only the slots that should survive a restart.
+        """Serialise the slots that should survive a restart.
 
-        Slot 5 tracks physical reality, which may have moved while Home
-        Assistant was down. It is therefore not restored at all - and, note,
-        not re-derived either: see the comment in store.py explaining why
-        seeding it from live state is a command nobody issued. Slot 4 is not persisted either: an automation that wants
-        its command to survive a restart will re-assert it on its own triggers,
-        and restoring a stale automation command would fight that.
+        Every override level (1-4) persists. Only slot 5 does not: it tracks
+        physical reality, which may have moved while Home Assistant was down.
+        It is not re-derived either - see the comment in store.py explaining
+        why seeding it from live state is a command nobody issued.
         """
         return {
             "slots": {

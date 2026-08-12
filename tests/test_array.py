@@ -73,19 +73,19 @@ def test_invalid_priority_rejected() -> None:
         array.write(6, _slot())
 
 
-def test_storage_round_trip_persists_only_high_slots() -> None:
-    """Slots 4 and 5 are re-derived rather than restored."""
+def test_storage_round_trip_persists_every_override_level() -> None:
+    """Levels 1-4 restore; only slot 5 is re-derived rather than restored."""
     array = PriorityArray("light.test")
     array.write(PRI_MANUAL, _slot("turn_on", brightness=120))
     array.write(PRI_AUTO, _slot("turn_off"))
     array.write(PRI_DEFAULT, _slot("turn_on"))
 
     stored = array.to_storage()
-    assert set(stored["slots"]) == {str(PRI_MANUAL)}
+    assert set(stored["slots"]) == {str(PRI_MANUAL), str(PRI_AUTO)}
 
     restored = PriorityArray.from_storage("light.test", stored)
     assert restored.get(PRI_MANUAL).data == {"brightness": 120}
-    assert restored.get(PRI_AUTO) is None
+    assert restored.get(PRI_AUTO).service == "turn_off"
     assert restored.get(PRI_DEFAULT) is None
 
 

@@ -49,14 +49,32 @@ PRIORITY_NAMES: Final[dict[int, str]] = {
     PRI_DEFAULT: "Default",
 }
 
-# Slots 4 and 5 are not restored across a restart. Slot 5 is the ordinary
-# last-wins traffic of the house and re-establishes itself immediately; slot 4
-# belongs to automations, which re-assert on their own triggers, and restoring a
-# stale automation command would fight that.
+# Every override level survives a restart. Only slot 5 does not: it is the
+# ordinary last-wins traffic of the house, it re-establishes itself the moment
+# anything is commanded, and a stored copy of it would be a claim about
+# physical reality that may have moved while Home Assistant was down.
+#
+# Slot 4 was originally excluded on the reasoning that automations re-assert on
+# their own triggers, so a restored automation command would just be stale. That
+# was wrong, and the mistake was inherited from an earlier draft in which 4 was
+# the *default* level for automations - somewhere commands would pile up without
+# anyone asking for them, and not worth preserving. Since everything defaults to
+# 5, nothing reaches slot 4 unless a caller explicitly wrote `priority: 4`. That
+# is a deliberate statement that this command should outrank ordinary traffic,
+# and it is no more disposable than the same statement made at level 3. An
+# automation that only re-asserts on an edge (peak start, a door opening, a
+# threshold crossing) has no trigger to re-fire after a reboot, so dropping its
+# slot silently handed control back to whatever it was overriding.
+#
+# A restored slot suppresses lower levels but is not re-driven at startup, the
+# same as levels 1-3; see the note at the foot of store.py about why nothing is
+# dispatched on load. Same-level writes replace each other, so an automation
+# that *does* re-assert simply overwrites what was restored.
 PERSISTED_PRIORITIES: Final = (
     PRI_MANUAL_EMERGENCY,
     PRI_AUTO_EMERGENCY,
     PRI_MANUAL,
+    PRI_AUTO,
 )
 
 STORAGE_KEY: Final = DOMAIN

@@ -285,8 +285,8 @@ class PriorityManager:
         light toggle in the house, to report a number that had not changed.
 
         Only overrides are interesting. Ordinary Default-level traffic updates
-        the array silently: nothing persists it (slots 4 and 5 are not stored)
-        and nothing displays it.
+        the array silently: nothing persists it (slot 5 is not stored) and
+        nothing displays it.
         """
         array = self._arrays.get(entity_id)
         held = array.effective_priority() if array is not None else None

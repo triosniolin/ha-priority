@@ -25,6 +25,12 @@ that idea, trimmed from sixteen levels to five, and made to fit Home Assistant.
 The lowest-numbered occupied level drives the device. Writes at the same level simply replace
 each other.
 
+Levels 1 to 4 are all *overrides*: nothing reaches them unless a caller asks for them by name, and
+they all survive a restart. Level 4 exists for the automation that does not deserve an emergency
+level but does need to outrank ordinary traffic, and to keep doing so through a reboot; an
+automation that fires on an edge (a peak window opening, a threshold crossing) has no trigger to
+re-fire afterwards.
+
 ## It changes nothing until you ask it to
 
 Everything defaults to level 5, including automations. Since same-level writes replace each
@@ -64,7 +70,7 @@ That is the part a timer cannot do. The lease does not turn the light off after 
 it stops overriding after twenty minutes, and the house resumes whatever it was already trying
 to do. Nothing needs to remember a previous state, so nothing can restore a stale one.
 
-It survives a restart (levels 1 to 3 persist with their leases, and a lease that lapsed while
+It survives a restart (every override level persists with its lease, and a lease that lapsed while
 Home Assistant was down is dropped rather than resurrected), and you can end it early with
 `priority.relinquish` or the Release button on the entity's own more-info dialog.
 
@@ -208,9 +214,11 @@ visible, but they only help if you look.
   is written to fail closed; if a Home Assistant update breaks it, the row stops appearing and
   nothing else changes. The tile-card feature uses a supported extension point and is the
   fallback.
-- Levels 4 and 5 are not restored across a restart. Automations re-assert on their own triggers,
-  and restoring a stale automation command would fight that. Levels 1-3 persist, leases included;
-  a lease that lapsed while Home Assistant was down is dropped rather than resurrected.
+- Every override level (1 to 4) is restored across a restart, leases included; a lease that lapsed
+  while Home Assistant was down is dropped rather than resurrected. Level 5 is not restored, since
+  it is ordinary last-wins traffic and a stored copy of it would be a claim about physical reality
+  that may have moved while Home Assistant was down. A restored slot suppresses everything below it
+  but is not re-driven at startup; nothing is, deliberately.
 - **`entity_id: all` is arbitrated.** A goodnight scene or an "all off" sweep will *not* defeat
   your overrides (held entities are skipped, everything else is switched normally). This was not
   true before 2026-08-11, when `all` silently bypassed arbitration entirely.
