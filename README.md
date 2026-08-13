@@ -76,15 +76,6 @@ Home Assistant was down is dropped rather than resurrected), and you can end it 
 
 This fell out of the priority model rather than being designed in, which is usually a sign the
 model is the right shape.
-## UI
-No Priority Commands (default, regular HA behavior):
-<img width="688" height="750" alt="image" src="https://github.com/user-attachments/assets/1a396fba-64fb-4a3d-94c8-6312107af488" />
-
-Two priority commands and a default command: 
-<img width="639" height="750" alt="image" src="https://github.com/user-attachments/assets/7629adc3-3bda-479c-9bc5-495a7e648429" />
-
-The priority array:
-<img width="774" height="217" alt="image" src="https://github.com/user-attachments/assets/c5e4ef0d-da3b-4057-85f5-cb431d32cb00" />
 
 ## Using it
 
@@ -142,11 +133,15 @@ hand-rolled capture-and-restore automation eventually hits.
 
 The array is shown in full, so you can see what is queued underneath what is winning:
 
-```
-Manual Emergency   ON    23m left   ← driving
-Automatic          OFF   59m left
-Default            ON
-```
+No Priority Commands (default, regular HA behavior):
+<img width="688" height="750" alt="image" src="https://github.com/user-attachments/assets/1a396fba-64fb-4a3d-94c8-6312107af488" />
+
+Two priority commands and a default command: 
+<img width="639" height="750" alt="image" src="https://github.com/user-attachments/assets/7629adc3-3bda-479c-9bc5-495a7e648429" />
+
+The priority array:
+<img width="774" height="217" alt="image" src="https://github.com/user-attachments/assets/c5e4ef0d-da3b-4057-85f5-cb431d32cb00" />
+
 
 Each override level can be released on its own. Taking, releasing and expiring an override are
 written to the entity's logbook, so the history shows what held it and when.
