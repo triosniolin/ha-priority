@@ -103,6 +103,11 @@ class PriorityManager:
         # Entities currently held above Default. Kept incrementally so the hot
         # path never has to scan every array to answer "did anything change".
         self._override_set: frozenset[str] = frozenset()
+        # user id -> display name, so attribution can be resolved from a
+        # @callback. hass.auth.async_get_user is a coroutine and the write path
+        # is synchronous, so the names are cached rather than looked up.
+        self._user_names: dict[str, str] = {}
+        self._user_refresh_pending = False
         self._managed_cache: frozenset[str] | None = None
         # (entity_id, priority) -> cancel callable for a pending slot expiry.
         self._timers: dict[tuple[str, int], Callable[[], None]] = {}
@@ -359,10 +364,36 @@ class PriorityManager:
             )
         )
 
+    async def async_refresh_user_names(self) -> None:
+        """Cache user id -> display name for attribution."""
+        self._user_refresh_pending = False
+        try:
+            users = await self.hass.auth.async_get_users()
+        except Exception:  # noqa: BLE001 - attribution must never break a write
+            _LOGGER.debug("Priority: could not load users for attribution")
+            return
+        self._user_names = {
+            user.id: user.name for user in users if user.name
+        }
+
+    @callback
+    def _async_schedule_user_refresh(self) -> None:
+        """Re-read the user list once, after an id we do not know about."""
+        if self._user_refresh_pending:
+            return
+        self._user_refresh_pending = True
+        self.hass.async_create_task(self.async_refresh_user_names())
+
     @callback
     def async_attribute(self, context: Context) -> str | None:
         """Best-effort human-readable attribution for a slot write."""
         if context.user_id:
+            # Fall back to the raw id rather than dropping the attribution: a
+            # user created since the last refresh should still be traceable,
+            # and the refresh means the next write resolves properly.
+            if (name := self._user_names.get(context.user_id)) is not None:
+                return f"user:{name}"
+            self._async_schedule_user_refresh()
             return f"user:{context.user_id}"
         # Automations and scripts stamp their own state with the context they
         # then use for their actions, so a bounded scan of those two domains
@@ -701,6 +732,9 @@ class PriorityManager:
 
     async def async_load(self) -> None:
         """Restore persisted slots."""
+        # Before the early return below: attribution needs these regardless of
+        # whether there is anything persisted to restore.
+        await self.async_refresh_user_names()
         if (raw := await self._store.async_load()) is None:
             return
         for entity_id, stored in (raw.get("arrays") or {}).items():
