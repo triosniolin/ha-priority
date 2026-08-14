@@ -15,10 +15,11 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import PRI_DEFAULT, PRIORITY_NAMES
+from .const import MIN_PRIORITY, PRI_DEFAULT, PRIORITY_NAMES
 
 if TYPE_CHECKING:
     from . import PriorityConfigEntry
+    from .array import PriorityArray
 
 
 async def async_setup_entry(
@@ -87,6 +88,7 @@ class PriorityOverrideSensor(SensorEntity):
                 continue
             priority, slot = winner
             result[entity_id] = {
+                # Winner, kept flat so an older cached card still renders.
                 "priority": priority,
                 "priority_name": PRIORITY_NAMES[priority],
                 "service": f"{slot.domain}.{slot.service}",
@@ -103,5 +105,32 @@ class PriorityOverrideSensor(SensorEntity):
                     if (state := self.hass.states.get(entity_id)) is not None
                     else entity_id
                 ),
+                # Every held level, not just the winner. Without this the card
+                # cannot show what is queued behind what is driving, which
+                # reads as an override having silently gone missing. Bounded:
+                # this only covers overridden entities, four slots at most.
+                "levels": self._levels(array),
             }
         return result
+
+    def _levels(self, array: PriorityArray) -> dict[str, Any]:
+        """Every occupied override level on one array, lowest first."""
+        levels: dict[str, Any] = {}
+        for priority in range(MIN_PRIORITY, PRI_DEFAULT):
+            slot = array.get(priority)
+            # Skip a lapsed slot whose timer has not fired yet, for the same
+            # reason effective() does: it is not holding anything.
+            if slot is None or slot.is_expired():
+                continue
+            levels[str(priority)] = {
+                "priority_name": PRIORITY_NAMES[priority],
+                "service": f"{slot.domain}.{slot.service}",
+                "written_at": slot.written_at.isoformat(),
+                "written_by": slot.written_by,
+                "expires_at": (
+                    None
+                    if slot.expires_at is None
+                    else slot.expires_at.isoformat()
+                ),
+            }
+        return levels

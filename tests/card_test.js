@@ -153,6 +153,70 @@ ok(
   "release calls priority.relinquish with the right level"
 );
 
+console.log("\n-- overrides card: more than one level on one entity --");
+// The sensor used to publish only the winning slot, so an entity held at both
+// Manual and Automatic looked like it was held once and the level underneath
+// had silently vanished.
+const multiHass = {
+  states: {
+    "sensor.active_overrides": {
+      state: "1",
+      attributes: {
+        overrides: {
+          "switch.pump": {
+            priority: 3,
+            priority_name: "Manual",
+            service: "switch.turn_on",
+            friendly_name: "Pump",
+            written_by: "user:Ada",
+            expires_at: null,
+            levels: {
+              3: {
+                priority_name: "Manual",
+                service: "switch.turn_on",
+                written_by: "user:Ada",
+                expires_at: null,
+              },
+              4: {
+                priority_name: "Automatic",
+                service: "switch.turn_on",
+                written_by: "automation.dusk",
+                expires_at: null,
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  callService: (d, s, data) => calls.push({ d, s, data }),
+};
+const ocMulti = new registry["priority-overrides-card"]();
+ocMulti.setConfig({});
+ocMulti.hass = multiHass;
+const multiHtml = ocMulti._body.innerHTML;
+ok(
+  (multiHtml.match(/class="row/g) || []).length === 2,
+  "renders one row per held level"
+);
+ok(
+  multiHtml.includes("Manual") && multiHtml.includes("Automatic"),
+  "shows both levels, not just the winner"
+);
+ok(
+  (multiHtml.match(/Pump/g) || []).length === 1,
+  "entity name appears once, as the group heading"
+);
+ok(multiHtml.includes(" · driving"), "marks which level is in control");
+ok(
+  multiHtml.includes("automation.dusk"),
+  "attributes the level the automation set"
+);
+ok(
+  /data-release="switch.pump" data-priority="4"/.test(multiHtml),
+  "the level underneath has its own Release button"
+);
+
 console.log("\n-- control card --");
 const cc = new registry["priority-control-card"]();
 cc.setConfig({ entities: ["light.living_room", "cover.garage", "lock.front"] });

@@ -116,14 +116,18 @@ class PriorityOverridesCard extends HTMLElement {
           padding: 8px 0 16px;
           color: var(--secondary-text-color);
         }
+        .group {
+          padding: 6px 0 4px;
+          border-bottom: 1px solid var(--divider-color);
+        }
+        .group:last-child { border-bottom: none; }
         .row {
           display: flex;
           align-items: center;
           gap: 12px;
-          padding: 10px 0;
-          border-bottom: 1px solid var(--divider-color);
+          padding: 6px 0;
         }
-        .row:last-child { border-bottom: none; }
+        .row.driving .meta { color: var(--primary-text-color); }
         .pill {
           flex: 0 0 auto;
           min-width: 78px;
@@ -191,21 +195,40 @@ class PriorityOverridesCard extends HTMLElement {
     this._body.innerHTML = ids
       .map((id) => {
         const o = overrides[id];
-        const left = this._remaining(o.expires_at);
-        const by = o.written_by ? String(o.written_by).replace(/^user:/, "") : "unknown";
-        return `
-          <div class="row">
+        // Older sensor payloads carried only the winning slot. Fall back to it
+        // so a cached card against a new sensor, or the reverse, still renders.
+        const levels = o.levels || {
+          [String(o.priority)]: o,
+        };
+        const rows = Object.keys(levels)
+          .map(Number)
+          .sort((a, b) => a - b)
+          .map((p) => {
+            const lv = levels[String(p)];
+            const left = this._remaining(lv.expires_at);
+            const by = lv.written_by
+              ? String(lv.written_by).replace(/^user:/, "")
+              : "unknown";
+            const driving = p === o.priority;
+            return `
+          <div class="row${driving ? " driving" : ""}">
             <div class="pill" style="background:${
-              PRIORITY_COLORS[o.priority] || "var(--primary-color)"
-            }">${o.priority} · ${o.priority_name}</div>
+              PRIORITY_COLORS[p] || "var(--primary-color)"
+            }">${p} · ${lv.priority_name}</div>
             <div class="main">
-              <div class="name" data-entity="${id}">${o.friendly_name || id}</div>
-              <div class="meta">${o.service} · set by ${by}</div>
+              <div class="meta">${lv.service} · set by ${by}${
+              driving ? " · driving" : ""
+            }</div>
             </div>
             <div class="lease">${left ? "releases in " + left : "held"}</div>
-            <mwc-button dense data-release="${id}" data-priority="${
-          o.priority
-        }">Release</mwc-button>
+            <mwc-button dense data-release="${id}" data-priority="${p}">Release</mwc-button>
+          </div>`;
+          })
+          .join("");
+        return `
+          <div class="group">
+            <div class="name" data-entity="${id}">${o.friendly_name || id}</div>
+            ${rows}
           </div>`;
       })
       .join("");
@@ -259,7 +282,7 @@ console.info("%c PRIORITY-OVERRIDES-CARD ", "background:#039be5;color:#fff");
  *   default_ttl: 1800
  *   entities:
  *     - light.living_room
- *     - light.porch
+ *     - light.outdoor_lights_2
  */
 
 const TTL_PRESETS = [
