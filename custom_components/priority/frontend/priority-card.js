@@ -796,6 +796,50 @@ const ROW_STYLE = `
     color: #fff;
   }
   .spacer { flex: 1 1 auto; }
+
+  /* Compact mode, set by the tile-card feature.
+   *
+   * The more-info dialog is a wide sheet; a tile card can be half a column. The
+   * slot row is built out of fixed minimum widths that add up to more than that,
+   * so at tile width the countdown and the Release button were pushed past the
+   * card edge and painted outside it. Here the level name is the only thing
+   * allowed to grow, and it truncates rather than shoving its neighbours out. */
+  :host([compact]) .wrap { padding: 4px 0 2px; gap: 6px; }
+  :host([compact]) .slots { font-size: 0.72rem; padding: 2px 0 4px; }
+  :host([compact]) .slot { gap: 6px; padding: 2px 6px; }
+  :host([compact]) .lvl {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  :host([compact]) .act { flex: 0 0 auto; }
+  :host([compact]) .rem { min-width: 0; }
+  /* Elastic level names fit the width, but they also made every row start its
+     action and countdown at a different x. Subgrid puts the columns back in
+     line while still letting the level name be the one that shrinks. Guarded,
+     because without subgrid the declaration is invalid and the slot would
+     collapse to one cell per line; unsupported browsers keep the flex layout
+     above, ragged but readable. */
+  @supports (grid-template-columns: subgrid) {
+    :host([compact]) .slots {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto auto;
+      column-gap: 6px;
+      row-gap: 2px;
+    }
+    :host([compact]) .slot {
+      display: grid;
+      grid-template-columns: subgrid;
+      grid-column: 1 / -1;
+      align-items: baseline;
+    }
+  }
+  /* Nothing to line up with once the columns are elastic. */
+  :host([compact]) .rel-spacer { display: none; }
+  :host([compact]) .rel-one { padding: 2px 6px; font-size: 0.68rem; }
+  :host([compact]) select { font-size: 0.8rem; padding: 4px 6px; }
+  :host([compact]) button { font-size: 0.8rem; padding: 4px 10px; }
 `;
 
 const SERVICE_LABELS = {
@@ -1187,12 +1231,35 @@ class PriorityTileFeature extends HTMLElement {
   _sync() {
     if (!this._hass || !this._stateObj) return;
     if (!PriorityTileFeature.isSupported(this._stateObj)) {
-      this.innerHTML = "";
+      if (this._root) this._root.innerHTML = "";
+      this._row = null;
       return;
+    }
+    if (!this._root) {
+      this._root = this.attachShadow({ mode: "open" });
+      /* hui-card-features sizes its children to a single control row. This
+       * feature is taller than that by design (it shows the whole array), and
+       * without opting out the extra height was laid out as zero and painted
+       * outside the card. The parent's sizing rules are not !important, so an
+       * !important declaration here wins without needing to know their
+       * selectors. */
+      const style = document.createElement("style");
+      style.textContent = `
+        :host {
+          display: block !important;
+          height: auto !important;
+          min-height: 0 !important;
+          max-height: none !important;
+          flex: none !important;
+          overflow: visible;
+        }`;
+      this._root.appendChild(style);
     }
     if (!this._row) {
       this._row = document.createElement("priority-row");
-      this.appendChild(this._row);
+      // Narrow container; see the compact rules in ROW_STYLE.
+      this._row.setAttribute("compact", "");
+      this._root.appendChild(this._row);
     }
     this._row.hass = this._hass;
     this._row.stateObj = this._stateObj;

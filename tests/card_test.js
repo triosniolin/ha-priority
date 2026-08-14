@@ -285,6 +285,43 @@ ok(
 );
 ok(!Feat.isSupported(undefined), "undefined stateObj handled");
 
+// The feature mounts the same row the more-info dialog uses, but a tile card is
+// a fraction of that width. Both of these guard the fix for the row painting
+// outside the card: the compact attribute drives the narrow layout, and the
+// host style opts out of the single-control-row height the tile card imposes.
+const feat = new Feat();
+feat.setConfig({});
+feat.hass = hass;
+feat.stateObj = { entity_id: "switch.pump" };
+
+ok(!!feat._root, "feature mounts into its own shadow root");
+ok(
+  feat._root &&
+    feat._root.children.some(
+      (c) => c.tagName === "style" && /height: auto !important/.test(c.textContent)
+    ),
+  "feature opts out of the fixed tile-feature height, so the array is not painted outside the card"
+);
+ok(
+  feat._row && feat._row.tagName === "priority-row",
+  "feature mounts a priority-row"
+);
+ok(
+  feat._row._attrs && feat._row._attrs.compact !== undefined,
+  "row is marked compact, so the slot columns fit a tile"
+);
+
+const featChildren = feat._root.children.length;
+feat.hass = { ...hass };
+feat.hass = { ...hass };
+ok(
+  feat._root.children.length === featChildren,
+  "repeated hass updates do NOT mount a second row"
+);
+
+feat.stateObj = { entity_id: "sensor.temperature" };
+ok(feat._row === null, "feature clears itself when moved to an unsupported entity");
+
 console.log("\n-- shared row (pickers are modifiers, not commands) --");
 const Row = registry["priority-row"];
 ok(!!Row, "priority-row registered");
