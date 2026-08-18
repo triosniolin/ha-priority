@@ -162,3 +162,55 @@ async def test_card_url_registered_is_the_one_removed(
     assert await demo_hass.config_entries.async_unload(entry.entry_id)
     await demo_hass.async_block_till_done()
     assert removed == added, "the URL removed must be the URL that was added"
+
+
+async def test_card_survives_a_config_entry_reload(
+    demo_hass, entry_options, monkeypatch
+) -> None:
+    """Reloading the entry must leave the card registered.
+
+    Unload removes the module URL, so setup has to add it back. The static path
+    is already registered from the first setup, and registering it twice raises
+    - which the broad `except` around registration would swallow, leaving the
+    card silently absent from every page until the next full restart. A reload
+    is the normal way to pick up a frontend change, so this is the path that
+    matters most.
+    """
+    from homeassistant.components import frontend
+
+    added: list[str] = []
+    removed: list[str] = []
+    monkeypatch.setattr(
+        frontend, "add_extra_js_url", lambda hass, url: added.append(url)
+    )
+    monkeypatch.setattr(
+        frontend, "remove_extra_js_url", lambda hass, url: removed.append(url)
+    )
+    demo_hass.config.components.add("frontend")
+
+    registered: list = []
+
+    class _Http:
+        async def async_register_static_paths(self, configs) -> None:
+            # Home Assistant refuses a path it is already serving.
+            for cfg in configs:
+                if cfg.url_path in registered:
+                    raise RuntimeError(f"Cannot register redundant path {cfg.url_path}")
+                registered.append(cfg.url_path)
+
+    monkeypatch.setattr(demo_hass, "http", _Http(), raising=False)
+
+    entry = MockConfigEntry(domain=DOMAIN, options=entry_options, unique_id=DOMAIN)
+    entry.add_to_hass(demo_hass)
+    assert await demo_hass.config_entries.async_setup(entry.entry_id)
+    await demo_hass.async_block_till_done()
+    assert len(added) == 1, "card not registered on first setup"
+
+    await demo_hass.config_entries.async_reload(entry.entry_id)
+    await demo_hass.async_block_till_done()
+
+    assert removed, "reload did not unregister the old URL"
+    assert len(added) == 2, (
+        "the card was not re-registered after a reload, so it is now absent "
+        "from every page until a full restart"
+    )

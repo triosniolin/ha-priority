@@ -68,6 +68,10 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 _CARD_URL = "/priority_static/priority-card.js"
 _FRONTEND_REGISTERED = "priority_frontend_registered"
+# Tracked apart from the module URL: a static path cannot be unregistered, so it
+# is registered once for the lifetime of the process, while the module URL is
+# added and removed on every setup and unload.
+_STATIC_REGISTERED = "priority_static_registered"
 
 
 def _card_path() -> pathlib.Path:
@@ -184,9 +188,15 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         from homeassistant.components.frontend import add_extra_js_url
         from homeassistant.components.http import StaticPathConfig
 
-        await hass.http.async_register_static_paths(
-            [StaticPathConfig(_CARD_URL, str(_card_path()), True)]
-        )
+        # Registering the same path twice raises, and a reload would then lose
+        # the card entirely: unload removes the module URL, and the failure
+        # here would stop it ever being added back, leaving no card on any page
+        # until a full restart.
+        if not hass.data.get(_STATIC_REGISTERED):
+            await hass.http.async_register_static_paths(
+                [StaticPathConfig(_CARD_URL, str(_card_path()), True)]
+            )
+            hass.data[_STATIC_REGISTERED] = True
         fingerprint = await hass.async_add_executor_job(_card_fingerprint)
         card_url = f"{_CARD_URL}?v={fingerprint}"
         add_extra_js_url(hass, card_url)
