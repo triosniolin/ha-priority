@@ -100,6 +100,9 @@ jobs:
     # about clicking, opening or positioning is actually checked.
     name: card behaviour (headless Chromium)
     runs-on: ubuntu-latest
+    # Without a cap, a hung browser install burns the default six hours before
+    # anyone finds out. Nothing here should take more than a couple of minutes.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -113,5 +116,10 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - run: npx playwright install --with-deps chromium
+      # Deliberately not --with-deps. That shells out to apt-get, which hung for
+      # sixteen minutes on the first run of this job, and the runner image
+      # already carries what the headless shell needs. If a future image drops a
+      # library, the test run below fails immediately with the missing .so
+      # named, which is a better failure than a silent stall.
+      - run: npx playwright install chromium
       - run: node tests/e2e_test.js
