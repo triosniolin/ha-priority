@@ -392,15 +392,30 @@ class PriorityControlCard extends HTMLElement {
           padding: 4px 16px 12px;
           flex-wrap: wrap;
           align-items: flex-end;
+          /* Must not clip the open list. */
+          overflow: visible;
         }
-        .field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 150px; }
+        .field {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          flex: 1 1 150px;
+          /* The options list is positioned against this, not the viewport. */
+          position: relative;
+        }
         .field label {
           font-size: 0.7rem;
           text-transform: uppercase;
           letter-spacing: 0.04em;
           color: var(--secondary-text-color);
         }
-        select {
+        /* This card renders into light DOM, so its <style> is global. Every
+           rule below is scoped to .controls so it cannot reach HA's own UI. */
+        .controls .pick {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 6px;
           padding: 8px;
           border-radius: 6px;
           border: 1px solid var(--divider-color);
@@ -408,7 +423,51 @@ class PriorityControlCard extends HTMLElement {
           color: var(--primary-text-color);
           font: inherit;
           width: 100%;
+          min-height: 36px;
+          cursor: pointer;
         }
+        .controls .pick-label {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .controls .caret { font-size: 0.7em; opacity: 0.7; }
+        /* This card lives in a sections view, where HA gives it a computed row
+           span and an ha-card of height:100%. A list that grows the card just
+           spills out the bottom of it. So here the list overlays instead.
+           position:absolute against .field, never fixed: absolute resolves
+           against an ancestor we control, so a transformed ancestor cannot
+           throw it off the way it did in the more-info dialog. */
+        .controls .menu {
+          position: absolute;
+          top: 100%;
+          left: 0;
+          right: 0;
+          z-index: 5;
+          display: grid;
+          gap: 2px;
+          margin-top: 4px;
+          padding: 4px;
+          max-height: 260px;
+          overflow-y: auto;
+          border-radius: 8px;
+          border: 1px solid var(--divider-color);
+          background: var(--card-background-color, var(--ha-card-background));
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.32);
+        }
+        .controls .menu[hidden] { display: none; }
+        .controls .opt {
+          text-align: left;
+          padding: 10px 12px;
+          border: none;
+          border-radius: 6px;
+          background: transparent;
+          color: var(--primary-text-color);
+          font: inherit;
+          cursor: pointer;
+        }
+        .controls .opt:hover { background: var(--secondary-background-color); }
+        .controls .opt.sel { font-weight: 600; color: var(--primary-color); }
         .note {
           padding: 0 16px 8px;
           font-size: 0.75rem;
@@ -456,42 +515,132 @@ class PriorityControlCard extends HTMLElement {
     this._renderRows();
   }
 
-  _renderControls() {
-    const prioOpts = [1, 2, 3, 4, 5]
+  /* Same inline pickers as the more-info row, and for the same reason: a native
+   * <select> opens an OS-level window that the Android companion app dismisses
+   * out from under you. See the comment on PriorityRow._wirePicker.
+   *
+   * This card renders into light DOM, so ids are not safe here - two control
+   * cards on one dashboard would collide. Everything is addressed by data
+   * attribute, scoped to this card's own controls element.
+   */
+  _fieldMarkup(key, label, items, current) {
+    const hit = items.find(([v]) => v === current);
+    const opts = items
       .map(
-        (p) =>
-          `<option value="${p}"${p === this._priority ? " selected" : ""}>${p} - ${
-            PRIORITY_LABELS[p]
-          }</option>`
+        ([v, text]) =>
+          `<button type="button" class="opt${
+            v === current ? " sel" : ""
+          }" role="option" aria-selected="${v === current}" data-v="${v}">${text}</button>`
       )
       .join("");
-    const ttlOpts = TTL_PRESETS.map(
-      (t) =>
-        `<option value="${t.value}"${
-          t.value === this._ttl ? " selected" : ""
-        }>${t.label}</option>`
-    ).join("");
+    return `
+      <div class="field">
+        <label>${label}</label>
+        <button type="button" class="pick" data-pick="${key}"
+                aria-haspopup="listbox" aria-expanded="false">
+          <span class="pick-label" data-label="${key}">${
+            hit ? hit[1] : current
+          }</span>
+          <span class="caret" aria-hidden="true">&#9662;</span>
+        </button>
+        <div class="menu" data-menu="${key}" role="listbox" hidden>${opts}</div>
+      </div>`;
+  }
+
+  _renderControls() {
+    this._prioItems = [1, 2, 3, 4, 5].map((p) => [p, `${p} - ${PRIORITY_LABELS[p]}`]);
+    this._ttlItems = TTL_PRESETS.map((t) => [t.value, t.label]);
 
     this._controls.innerHTML = `
-      <div class="field">
-        <label for="p">Priority</label>
-        <select id="p">${prioOpts}</select>
-      </div>
-      <div class="field">
-        <label for="t">Hold for</label>
-        <select id="t">${ttlOpts}</select>
-      </div>`;
+      ${this._fieldMarkup("p", "Priority", this._prioItems, this._priority)}
+      ${this._fieldMarkup("t", "Hold for", this._ttlItems, this._ttl)}`;
 
-    this._controls.querySelector("#p").onchange = (e) => {
-      this._priority = Number(e.target.value);
-      this._renderControls();
-      this._renderRows();
+    this._wireField("p", () => this._prioItems, (v) => {
+      this._priority = v;
+    });
+    this._wireField("t", () => this._ttlItems, (v) => {
+      this._ttl = v;
+    });
+  }
+
+  _wireField(key, items, apply) {
+    const q = (sel) => this._controls.querySelector(sel);
+    const btn = q(`[data-pick="${key}"]`);
+    const menu = q(`[data-menu="${key}"]`);
+    if (!btn || !menu) return;
+
+    const close = () => {
+      menu.hidden = true;
+      if (btn.setAttribute) btn.setAttribute("aria-expanded", "false");
     };
-    this._controls.querySelector("#t").onchange = (e) => {
-      this._ttl = Number(e.target.value);
-      this._renderControls();
-      this._renderRows();
+    this._closers = this._closers || {};
+    this._closers[key] = close;
+
+    btn.onclick = (e) => {
+      if (e && e.stopPropagation) e.stopPropagation();
+      if (menu.hidden === false) return close();
+      Object.keys(this._closers).forEach((k) => {
+        if (k !== key) this._closers[k]();
+      });
+      menu.hidden = false;
+      if (btn.setAttribute) btn.setAttribute("aria-expanded", "true");
     };
+    // The list floats over the rows beneath it, so a tap anywhere else has to
+    // put it away - including a tap elsewhere inside this same card, which is
+    // where the rows it is covering actually are.
+    if (!this._outside && document.addEventListener) {
+      this._outside = (e) => {
+        const t = e && e.target;
+        if (t && t.closest && (t.closest("[data-menu]") || t.closest("[data-pick]"))) {
+          return;
+        }
+        this._closeAllFields();
+      };
+      document.addEventListener("click", this._outside);
+    }
+
+    if (menu.querySelectorAll) {
+      menu.querySelectorAll("[data-v]").forEach((opt) => {
+        opt.onclick = () => {
+          const v = Number(opt.getAttribute("data-v"));
+          if (Number.isNaN(v)) return;
+          apply(v);
+          close();
+          this._paintFieldLabel(key, items());
+          // Only the rows and the note depend on the selection; re-rendering
+          // the controls here would tear out the very button just tapped.
+          this._renderRows();
+        };
+      });
+    }
+
+    this._paintFieldLabel(key, items());
+  }
+
+  _closeAllFields() {
+    Object.keys(this._closers || {}).forEach((k) => this._closers[k]());
+  }
+
+  disconnectedCallback() {
+    if (this._outside && document.removeEventListener) {
+      document.removeEventListener("click", this._outside);
+      this._outside = null;
+    }
+  }
+
+  _paintFieldLabel(key, items) {
+    const current = key === "t" ? this._ttl : this._priority;
+    const hit = items.find(([v]) => v === current);
+    const label = this._controls.querySelector(`[data-label="${key}"]`);
+    if (label) label.textContent = hit ? hit[1] : String(current);
+    const menu = this._controls.querySelector(`[data-menu="${key}"]`);
+    if (menu && menu.querySelectorAll) {
+      menu.querySelectorAll("[data-v]").forEach((opt) => {
+        const on = Number(opt.getAttribute("data-v")) === current;
+        if (opt.setAttribute) opt.setAttribute("aria-selected", on ? "true" : "false");
+        if (opt.classList) opt.classList.toggle("sel", on);
+      });
+    }
   }
 
   _renderRows() {
@@ -698,6 +847,30 @@ function _wrapCallService(hass) {
   }
 }
 
+function _pickerMarkup(id, title, items, current) {
+  const hit = items.find(([v]) => v === current);
+  return `
+    <div class="picker">
+      <button type="button" class="pick" id="${id}" title="${title}"
+              aria-haspopup="listbox" aria-expanded="false" aria-controls="${id}-menu">
+        <span class="pick-label" id="${id}-label">${hit ? hit[1] : current}</span>
+        <span class="caret" aria-hidden="true">&#9662;</span>
+      </button>
+    </div>`;
+}
+
+function _menuMarkup(id, items, current) {
+  const opts = items
+    .map(
+      ([v, label]) =>
+        `<button type="button" class="opt${
+          v === current ? " sel" : ""
+        }" role="option" aria-selected="${v === current}" data-v="${v}">${label}</button>`
+    )
+    .join("");
+  return `<div class="menu" id="${id}-menu" role="listbox" hidden>${opts}</div>`;
+}
+
 const ROW_STYLE = `
   :host { display: block; }
   .wrap {
@@ -715,6 +888,56 @@ const ROW_STYLE = `
     padding-bottom: 6px;
   }
   select:disabled { opacity: 0.5; }
+  .picker { display: inline-flex; }
+  .pick {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--divider-color);
+    background: var(--card-background-color, var(--ha-card-background));
+    color: var(--primary-text-color);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+    /* Comfortably tappable on a phone without making the desktop row taller. */
+    min-height: 36px;
+  }
+  .pick[disabled] { opacity: 0.5; cursor: default; }
+  .pick-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .caret { font-size: 0.7em; opacity: 0.7; }
+  /* The options list sits in normal flow and pushes the rest of the row down.
+     It is not an overlay on purpose: an overlay has to be positioned against
+     something, and inside the more-info dialog there is nothing dependable to
+     position against. See the comment on _wirePicker. */
+  .menu {
+    display: grid;
+    gap: 2px;
+    margin: 4px 0 2px;
+    padding: 4px;
+    border-radius: 8px;
+    border: 1px solid var(--divider-color);
+    background: var(--secondary-background-color);
+  }
+  .menu[hidden] { display: none; }
+  .opt {
+    text-align: left;
+    padding: 10px 12px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--primary-text-color);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .opt:hover { background: var(--secondary-background-color); }
+  .opt.sel { font-weight: 600; color: var(--primary-color); }
   .slots {
     display: flex;
     flex-direction: column;
@@ -839,6 +1062,38 @@ const ROW_STYLE = `
   :host([compact]) .rel-spacer { display: none; }
   :host([compact]) .rel-one { padding: 2px 6px; font-size: 0.68rem; }
   :host([compact]) select { font-size: 0.8rem; padding: 4px 6px; }
+  /* A tile card can be half a column - about 230px. A 120px flex basis needs
+     more than that for two of them, so the pickers wrapped onto two lines and
+     the row grew past the height the tile card had been given, painting over
+     its bottom edge. Zero basis lets them share whatever width there is and
+     truncate instead of wrapping. */
+  :host([compact]) .picker { flex: 1 1 0; min-width: 0; }
+  /* In the more-info dialog the list grows the row and the dialog scrolls. A
+     tile card cannot do that: it has been given a fixed height by the sections
+     grid, so a taller row paints straight through its bottom edge. Here the
+     list overlays instead. The .top element is the positioning context and
+     holds only the controls row, so top:100% lands exactly under it. Absolute,
+     never fixed - see _wirePicker. */
+  :host([compact]) .top { position: relative; }
+  :host([compact]) .menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 5;
+    margin: 2px 0 0;
+    max-height: 220px;
+    overflow-y: auto;
+    background: var(--card-background-color, var(--ha-card-background));
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.32);
+  }
+  :host([compact]) .opt { padding: 8px 10px; font-size: 0.8rem; }
+  :host([compact]) .pick {
+    width: 100%;
+    font-size: 0.8rem;
+    padding: 3px 6px;
+    min-height: 28px;
+  }
   :host([compact]) button { font-size: 0.8rem; padding: 4px 10px; }
 `;
 
@@ -895,6 +1150,9 @@ class PriorityRow extends HTMLElement {
     this._ttl = 0;
     this._array = null;
     this._built = false;
+    // True while a picker menu is open. Anything that rewrites the row holds
+    // off until it closes, so the menu is never realigned or torn out mid-tap.
+    this._menuOpen = false;
   }
 
   connectedCallback() {
@@ -911,6 +1169,7 @@ class PriorityRow extends HTMLElement {
       window.clearInterval(this._tick);
       this._tick = null;
     }
+    this._menuOpen = false;
     // A level chosen inside a dialog applies to what you do while looking at
     // it. Leaving it armed would mean a toggle elsewhere later silently
     // carried Manual Emergency.
@@ -1011,45 +1270,134 @@ class PriorityRow extends HTMLElement {
       return;
     }
 
-    const prio = [1, 2, 3, 4, 5]
-      .map(
-        (p) =>
-          `<option value="${p}"${p === this._priority ? " selected" : ""}>${
-            PRIORITY_LABELS[p]
-          }</option>`
-      )
-      .join("");
-    const ttl = TTL_PRESETS.map(
-      (t) =>
-        `<option value="${t.value}"${
-          t.value === this._ttl ? " selected" : ""
-        }>${t.label}</option>`
-    ).join("");
+    this._prioItems = [1, 2, 3, 4, 5].map((p) => [p, PRIORITY_LABELS[p]]);
+    this._ttlItems = TTL_PRESETS.map((t) => [t.value, t.label]);
 
     this.shadowRoot.innerHTML = `
       <style>${ROW_STYLE}</style>
-      <div class="wrap">
-        <select id="p" title="Priority level for commands issued here">${prio}</select>
-        <select id="t" title="How long the command holds">${ttl}</select>
+      <div class="top">
+        <div class="wrap">
+        ${_pickerMarkup(
+          "p",
+          "Priority level for commands issued here",
+          this._prioItems,
+          this._priority
+        )}
+        ${_pickerMarkup(
+          "t",
+          "How long the command holds",
+          this._ttlItems,
+          this._ttl
+        )}
         <span id="rel-wrap"></span>
+        </div>
+        ${_menuMarkup("p", this._prioItems, this._priority)}
+        ${_menuMarkup("t", this._ttlItems, this._ttl)}
       </div>
       <div class="hint" id="hint"></div>
       <div class="slots" id="slots"></div>`;
 
-    const $ = (s) => this.shadowRoot.getElementById(s);
-    $("p").onchange = (e) => {
-      this._priority = Number(e.target.value);
-      this._select(this._priority, this._ttl);
-      this._paintStatus();
-    };
-    $("t").onchange = (e) => {
-      this._ttl = Number(e.target.value);
-      this._select(this._priority, this._ttl);
-      this._paintStatus();
-    };
+    this._wirePicker("p", () => this._prioItems, (v) => {
+      this._priority = v;
+    });
+    this._wirePicker("t", () => this._ttlItems, (v) => {
+      this._ttl = v;
+    });
 
     this._built = true;
     this._paintStatus();
+  }
+
+  /* The pickers are hand-rolled, and their options open inline rather than as
+   * a floating menu. Both decisions were forced.
+   *
+   * A native <select> opens an OS-level window in the Android companion app,
+   * which the WebView dismisses on any relayout - and this row rewrites its own
+   * countdowns once a second, so the picker collapsed the instant you used it.
+   * ha-select registers no items when built imperatively, so its menu listed
+   * the levels but none could be chosen and the field painted a raw "5".
+   *
+   * A position:fixed menu of our own then failed a third way: more-info renders
+   * as a floating dialog on a wide viewport, MDC animates that dialog on a
+   * transform, and a transformed ancestor makes position:fixed resolve against
+   * the ancestor instead of the viewport. Coordinates taken from
+   * getBoundingClientRect were then wrong by the dialog's offset and the menu
+   * landed off screen - while still reporting a perfectly healthy rect, which
+   * is why it looked fine to every check short of hit-testing a real pixel. It
+   * worked only when the viewport was narrow enough that HA switched to a
+   * full-screen sheet and the two origins happened to coincide.
+   *
+   * So there is no overlay. The options are an ordinary block that pushes the
+   * rest of the row down, and the dialog scrolls if it must. Nothing to
+   * position, nothing to clip, no stacking context to lose.
+   */
+  _wirePicker(id, items, apply) {
+    const $ = (s) => this.shadowRoot.getElementById(s);
+    const btn = $(id);
+    const menu = $(id + "-menu");
+    if (!btn || !menu) return;
+
+    const close = () => {
+      menu.hidden = true;
+      if (btn.setAttribute) btn.setAttribute("aria-expanded", "false");
+      this._menuOpen = false;
+      // Whatever the ticker held off on while this was open.
+      this._paintStatus();
+    };
+    this._closers = this._closers || {};
+    this._closers[id] = close;
+
+    const open = () => {
+      // Only one at a time, or the row grows by both lists at once.
+      Object.keys(this._closers).forEach((k) => {
+        if (k !== id) this._closers[k]();
+      });
+      if (btn.disabled) return;
+      menu.hidden = false;
+      if (btn.setAttribute) btn.setAttribute("aria-expanded", "true");
+      this._menuOpen = true;
+    };
+
+    btn.onclick = () => (menu.hidden === false ? close() : open());
+    if (btn.addEventListener) {
+      btn.addEventListener("keydown", (e) => {
+        if (e && e.key === "Escape") close();
+      });
+    }
+
+    if (menu.querySelectorAll) {
+      menu.querySelectorAll("[data-v]").forEach((opt) => {
+        opt.onclick = () => {
+          const v = Number(opt.getAttribute("data-v"));
+          if (Number.isNaN(v)) return;
+          apply(v);
+          this._select(this._priority, this._ttl);
+          close();
+          this._paintPickerLabel(id, items());
+        };
+      });
+    }
+
+    this._paintPickerLabel(id, items());
+  }
+
+  _paintPickerLabel(id, items) {
+    const current = id === "t" ? this._ttl : this._priority;
+    const hit = items.find(([v]) => v === current);
+    const el = this.shadowRoot.getElementById(id + "-label");
+    if (el) el.textContent = hit ? hit[1] : String(current);
+    const menu = this.shadowRoot.getElementById(id + "-menu");
+    if (menu && menu.querySelectorAll) {
+      menu.querySelectorAll("[data-v]").forEach((opt) => {
+        const on = Number(opt.getAttribute("data-v")) === current;
+        if (opt.setAttribute) opt.setAttribute("aria-selected", on ? "true" : "false");
+        if (opt.classList) opt.classList.toggle("sel", on);
+      });
+    }
+  }
+
+  _closeMenus() {
+    Object.keys(this._closers || {}).forEach((k) => this._closers[k]());
   }
 
   _paintStatus() {
@@ -1076,7 +1424,9 @@ class PriorityRow extends HTMLElement {
         this._array.effective_priority !== null &&
         this._array.effective_priority < 5;
       const wanted = held ? "yes" : "no";
-      if (relWrap.dataset.held !== wanted) {
+      // This sits beside the pickers, so adding or removing it shifts the
+      // button a menu was positioned against. Repainted on close.
+      if (!this._menuOpen && relWrap.dataset.held !== wanted) {
         relWrap.dataset.held = wanted;
         // "Release" was a lie - it calls relinquish_all and clears every level
         // at once, which matters now that each level can be released on its own.
@@ -1137,6 +1487,9 @@ class PriorityRow extends HTMLElement {
    * the entire point of an array rather than a flag. */
   _paintSlots() {
     if (!this._built) return;
+    // The countdown rewrite runs once a second, forever. A stale "14m left" for
+    // a few seconds costs nothing next to a menu moving under a fingertip.
+    if (this._menuOpen) return;
     const el = this.shadowRoot.getElementById("slots");
     if (!el) return;
 

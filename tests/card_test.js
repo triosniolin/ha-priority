@@ -14,6 +14,8 @@ class El {
   }
   set innerHTML(v) {
     this._html = String(v);
+    // New markup means new nodes; the old stubs no longer correspond to it.
+    this._findCache = {};
   }
   get innerHTML() {
     return this._html;
@@ -35,14 +37,27 @@ class El {
     const re = attr
       ? new RegExp(`${attr[1]}="([^"]*)"`, "g")
       : new RegExp(`id="${(sel || "").replace("#", "")}"`, "g");
+    // A real querySelectorAll hands back the same nodes every time. Without
+    // memoising, a handler attached on one call lands on a throwaway object and
+    // the next call sees an element that was never wired.
+    this._findCache = this._findCache || {};
     let m;
     while ((m = re.exec(this._html))) {
-      const stub = new El("stub");
-      stub._attrs = { [attr ? attr[1] : "id"]: m[1] };
-      stub.getAttribute = (k) => {
-        const mm = new RegExp(`${k}="([^"]*)"`).exec(this._html);
-        return stub._attrs[k] !== undefined ? stub._attrs[k] : mm && mm[1];
-      };
+      // `[data-menu="t"]` must not match data-menu="p". Without this the stub
+      // hands back the first element carrying the attribute at all, and a test
+      // that thinks it is driving one control is really driving another.
+      if (attr && attr[2] !== undefined && m[1] !== attr[2]) continue;
+      const key = `${attr ? attr[1] : "id"}=${m[1]}`;
+      let stub = this._findCache[key];
+      if (!stub) {
+        stub = new El("stub");
+        stub._attrs = { [attr ? attr[1] : "id"]: m[1] };
+        stub.getAttribute = (k) => {
+          const mm = new RegExp(`${k}="([^"]*)"`).exec(this._html);
+          return stub._attrs[k] !== undefined ? stub._attrs[k] : mm && mm[1];
+        };
+        this._findCache[key] = stub;
+      }
       out.push(stub);
     }
     return out;
@@ -55,9 +70,28 @@ class El {
       if (!new RegExp(`id="${id}"`).test(this.shadowRoot.innerHTML)) return null;
       if (!this.shadowRoot._byId[id]) {
         const e = new El("stub#" + id);
+        e.id = id;
         e.dataset = {};
         e.textContent = "";
         e.disabled = false;
+        e.hidden = true;
+        e.style = {};
+        // Carry the element's own inner markup, so things built inside it (the
+        // picker menus) can actually be found and clicked. Finds the real
+        // closing tag rather than the first one of any kind - a menu <div> full
+        // of <button> options would otherwise be cut off at its first option.
+        // Only valid for markup that never nests a tag inside itself, which is
+        // all this file emits.
+        const html = this.shadowRoot.innerHTML;
+        const open = new RegExp(
+          `<([a-z][a-z0-9-]*)[^>]*\\bid="${id}"[^>]*>`,
+          "i"
+        ).exec(html);
+        if (open) {
+          const start = open.index + open[0].length;
+          const end = html.indexOf(`</${open[1]}>`, start);
+          if (end !== -1) e._html = html.slice(start, end);
+        }
         this.shadowRoot._byId[id] = e;
       }
       return this.shadowRoot._byId[id];
@@ -218,11 +252,25 @@ ok(
 );
 
 console.log("\n-- control card --");
+// Kept in step with TTL_PRESETS in the card without importing it.
+const TTL_COUNT = 8;
 const cc = new registry["priority-control-card"]();
 cc.setConfig({ entities: ["light.living_room", "cover.garage", "lock.front"] });
 cc.hass = hass;
 ok(cc._controls.innerHTML.includes("1 - Manual Emergency"), "priority dropdown populated");
 ok(cc._controls.innerHTML.includes("30 minutes"), "lease presets populated");
+// Same reason as the more-info row: a native <select> is an OS window in the
+// Android app and gets dismissed out from under the tap.
+ok(!cc._controls.innerHTML.includes("<select"), "control card uses no native select");
+ok(
+  (cc._controls.innerHTML.match(/data-v="/g) || []).length === 5 + TTL_COUNT,
+  "every level and every lease preset is an option button"
+);
+// Light DOM: two of these cards on one dashboard must not fight over ids.
+ok(
+  !/id="[pt]"/.test(cc._controls.innerHTML),
+  "controls are addressed by data attribute, not by id"
+);
 ok(cc._rows.innerHTML.includes("Manual Emergency"), "shows the held badge");
 ok(cc._rows.innerHTML.includes(">Open<"), "cover uses Open, not On");
 ok(cc._rows.innerHTML.includes(">Unlock<"), "lock uses Unlock, not Off");
@@ -646,6 +694,99 @@ setTimeout(() => {
     "patched updated() injects the row"
   );
   ok(FakeMoreInfo.__priorityPatched === true, "patch is marked, so it cannot double-apply");
+
+  console.log("\n-- hand-rolled pickers --");
+
+  // Neither a native <select> nor ha-select survives the Android companion app:
+  // the first opens an OS window the WebView dismisses on any relayout, and the
+  // second registers no items at all when built imperatively, so its menu lists
+  // the levels but none of them can be chosen.
+  const pk = mkRow("switch.pump");
+  ok(
+    !pk.shadowRoot.innerHTML.includes("<select") &&
+      !pk.shadowRoot.innerHTML.includes("<ha-select"),
+    "no native select and no ha-select anywhere in the row"
+  );
+  ok(
+    pk.shadowRoot.getElementById("p-label").textContent === "Default",
+    "closed picker shows the level name, not its number"
+  );
+
+  const pBtn = pk.shadowRoot.getElementById("p");
+  const pMenu = pk.shadowRoot.getElementById("p-menu");
+  ok(pMenu.hidden === true, "menu starts closed");
+
+  const opts = pMenu.querySelectorAll("[data-v]");
+  ok(opts.length === 5, `every level is an option, got ${opts.length}`);
+
+  const slotsBefore = pk.shadowRoot.getElementById("slots").innerHTML;
+  pBtn.onclick();
+  ok(pMenu.hidden === false, "tapping the button opens the menu");
+
+  // The ticker rewrites the row once a second. With a menu open that can shift
+  // the button it was positioned against, so it has to hold off.
+  pk._array = { effective_priority: 3, slots: { "3": { service: "turn_on", data: {} } } };
+  pk._paintSlots();
+  ok(
+    pk.shadowRoot.getElementById("slots").innerHTML === slotsBefore,
+    "an open menu really does freeze the repaint, not just set a flag"
+  );
+
+  SEL.clear();
+  opts.find((o) => o.getAttribute("data-v") === "1").onclick();
+  ok(pk._priority === 1, "choosing an option commits the level");
+  ok(
+    SEL.get("switch.pump") && SEL.get("switch.pump").priority === 1,
+    "and arms the selection the interceptor reads"
+  );
+  ok(pMenu.hidden === true, "choosing closes the menu");
+  ok(
+    pk.shadowRoot.getElementById("slots").innerHTML.includes("Manual"),
+    "and closing repaints whatever the freeze skipped"
+  );
+  ok(
+    pk.shadowRoot.getElementById("p-label").textContent === "Manual Emergency",
+    "the closed picker shows what was chosen"
+  );
+
+  // The button toggles: a second tap puts the list away again.
+  pBtn.onclick();
+  ok(pMenu.hidden === false, "reopens");
+  pBtn.onclick();
+  ok(pMenu.hidden === true, "tapping the button again closes it");
+
+  // Both menus open at once would paint over each other.
+  pBtn.onclick();
+  pk.shadowRoot.getElementById("t").onclick();
+  ok(
+    pMenu.hidden === true &&
+      pk.shadowRoot.getElementById("t-menu").hidden === false,
+    "opening one picker closes the other"
+  );
+
+  // Nothing positions the list, so nothing can strand it - but a caller can
+  // still put everything away.
+  pk._closeMenus();
+  ok(
+    pk.shadowRoot.getElementById("t-menu").hidden === true,
+    "_closeMenus puts every open list away"
+  );
+
+  // Default is not an override, so the lease picker is meaningless there.
+  const lease = mkRow("switch.pump");
+  ok(
+    lease.shadowRoot.getElementById("t").disabled === true,
+    "lease picker disabled at Default"
+  );
+  lease.shadowRoot
+    .getElementById("p-menu")
+    .querySelectorAll("[data-v]")
+    .find((o) => o.getAttribute("data-v") === "3")
+    .onclick();
+  ok(
+    lease.shadowRoot.getElementById("t").disabled === false,
+    "and enabled once a real level is chosen"
+  );
 
   console.log(fails ? `\n${fails} FAILURES` : "\nall card checks passed");
   process.exit(fails ? 1 : 0);
