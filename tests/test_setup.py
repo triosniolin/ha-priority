@@ -89,3 +89,76 @@ async def test_priority_field_is_accepted_and_bounded(priority_entry, demo_hass)
         await demo_hass.services.async_call(
             "light", "turn_on", {"entity_id": entity_id, "priority": 9}, blocking=True
         )
+
+
+async def test_card_url_is_content_fingerprinted(demo_hass) -> None:
+    """The card URL must change when the card does.
+
+    The static path is served with a month-long max-age, so a browser that has
+    the file will not ask for it again. Without a fingerprint in the URL, a
+    frontend fix reaches nobody until that expires - which is exactly what an
+    updated integration reporting itself healthy looks like from the outside.
+    """
+    from custom_components.priority import _card_fingerprint, _card_path
+
+    first = await demo_hass.async_add_executor_job(_card_fingerprint)
+    assert first != "0", "the card must be readable"
+    assert len(first) == 12
+    assert first == await demo_hass.async_add_executor_job(_card_fingerprint), (
+        "same bytes must give the same URL, or every restart busts every cache"
+    )
+
+    path = _card_path()
+    original = path.read_bytes()
+    try:
+        path.write_bytes(original + b"\n// changed\n")
+        assert await demo_hass.async_add_executor_job(_card_fingerprint) != first
+    finally:
+        path.write_bytes(original)
+
+
+async def test_card_url_registered_is_the_one_removed(
+    demo_hass, entry_options, monkeypatch
+) -> None:
+    """Unregistering has to name the exact URL that was added.
+
+    `remove_extra_js_url` matches on the string. Now that the URL carries a
+    fingerprint, removing the bare path would silently do nothing and leave the
+    card loading on every page until the next restart.
+    """
+    from homeassistant.components import frontend
+
+    # The rig has no frontend component, and the registration path deliberately
+    # no-ops without one. Stand in for it so the add/remove pairing is actually
+    # exercised rather than skipped.
+    demo_hass.config.components.add("frontend")
+
+    class _Http:
+        def __init__(self) -> None:
+            self.paths: list = []
+
+        async def async_register_static_paths(self, configs) -> None:
+            self.paths.extend(configs)
+
+    monkeypatch.setattr(demo_hass, "http", _Http(), raising=False)
+
+    added: list[str] = []
+    removed: list[str] = []
+    monkeypatch.setattr(
+        frontend, "add_extra_js_url", lambda hass, url: added.append(url)
+    )
+    monkeypatch.setattr(
+        frontend, "remove_extra_js_url", lambda hass, url: removed.append(url)
+    )
+
+    entry = MockConfigEntry(domain=DOMAIN, options=entry_options, unique_id=DOMAIN)
+    entry.add_to_hass(demo_hass)
+    assert await demo_hass.config_entries.async_setup(entry.entry_id)
+    await demo_hass.async_block_till_done()
+
+    assert added, "the card was never registered, so nothing here was tested"
+    assert "?v=" in added[0], f"card URL is not cache-busted: {added[0]}"
+
+    assert await demo_hass.config_entries.async_unload(entry.entry_id)
+    await demo_hass.async_block_till_done()
+    assert removed == added, "the URL removed must be the URL that was added"

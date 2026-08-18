@@ -34,6 +34,7 @@ priority above 5.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import pathlib
 
@@ -67,6 +68,31 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 _CARD_URL = "/priority_static/priority-card.js"
 _FRONTEND_REGISTERED = "priority_frontend_registered"
+
+
+def _card_path() -> pathlib.Path:
+    """Absolute path of the card JS on disk."""
+    return pathlib.Path(__file__).parent / "frontend" / "priority-card.js"
+
+
+def _card_fingerprint() -> str:
+    """Short content hash of the card, for cache-busting its URL.
+
+    The static path is served with a month-long max-age, and the browser has no
+    other reason to re-fetch a URL it has already seen. Without a fingerprint an
+    updated card reaches nobody until that expires - a frontend fix could sit
+    invisible for thirty-one days while the integration reported itself updated.
+
+    Hashing the content rather than the manifest version means the URL changes
+    exactly when the file does, which also makes it work while developing
+    against a running instance. Blocking I/O: call it in an executor.
+    """
+    try:
+        return hashlib.sha256(_card_path().read_bytes()).hexdigest()[:12]
+    except OSError:
+        # A missing or unreadable card is handled by the caller; degrade to an
+        # unversioned URL rather than failing registration over a hash.
+        return "0"
 
 type PriorityConfigEntry = ConfigEntry[PriorityManager]
 
@@ -149,7 +175,9 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
     # Arbitration must not depend on the frontend being present. A headless
     # instance, or a test rig without the compiled frontend package, still gets
     # a fully working integration - it just has no card.
-    if "frontend" not in hass.config.components or not hasattr(hass, "http"):
+    # `hass.http` is present but None on a rig without the http component, so
+    # hasattr is not enough - it let registration through to fail on None.
+    if "frontend" not in hass.config.components or getattr(hass, "http", None) is None:
         _LOGGER.debug("Priority: no frontend available, skipping card registration")
         return
     try:
@@ -157,19 +185,15 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         from homeassistant.components.http import StaticPathConfig
 
         await hass.http.async_register_static_paths(
-            [
-                StaticPathConfig(
-                    _CARD_URL,
-                    str(
-                        pathlib.Path(__file__).parent / "frontend" / "priority-card.js"
-                    ),
-                    True,
-                )
-            ]
+            [StaticPathConfig(_CARD_URL, str(_card_path()), True)]
         )
-        add_extra_js_url(hass, _CARD_URL)
-        hass.data[_FRONTEND_REGISTERED] = True
-        _LOGGER.info("Priority registered its dashboard card at %s", _CARD_URL)
+        fingerprint = await hass.async_add_executor_job(_card_fingerprint)
+        card_url = f"{_CARD_URL}?v={fingerprint}"
+        add_extra_js_url(hass, card_url)
+        # The versioned URL, not just a flag: unregistering has to remove the
+        # exact string that was added or it silently does nothing.
+        hass.data[_FRONTEND_REGISTERED] = card_url
+        _LOGGER.info("Priority registered its dashboard card at %s", card_url)
     except Exception:
         _LOGGER.exception("Priority could not register its dashboard card")
 
@@ -183,12 +207,13 @@ def _async_unregister_frontend(hass: HomeAssistant) -> None:
     page until the next restart - and the flag stayed set, so a re-add in the
     same session skipped registration entirely.
     """
-    if not hass.data.pop(_FRONTEND_REGISTERED, False):
+    card_url = hass.data.pop(_FRONTEND_REGISTERED, None)
+    if not card_url:
         return
     try:
         from homeassistant.components.frontend import remove_extra_js_url
 
-        remove_extra_js_url(hass, _CARD_URL)
+        remove_extra_js_url(hass, card_url)
     except Exception:
         _LOGGER.debug("Priority could not unregister its card", exc_info=True)
 
