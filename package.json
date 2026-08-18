@@ -1,0 +1,14 @@
+{
+  "name": "ha-priority",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Browser-based tests for the priority integration's dashboard cards",
+  "scripts": {
+    "test": "node tests/card_test.js",
+    "test:e2e": "./tests/run_e2e.sh"
+  },
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  }
+}
