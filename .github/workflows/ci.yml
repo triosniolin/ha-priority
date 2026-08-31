@@ -43,6 +43,7 @@ jobs:
         with:
           python-version: "3.14"
       - run: pip install -r requirements-test.txt ruff
+      - run: python tests/shim_requirements.py | xargs -r pip install
       - run: ruff check custom_components/priority
       - run: python -m pytest tests/ -q
 
@@ -58,10 +59,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      - run: |
-          pip install pytest-homeassistant-custom-component==0.13.355
-          grep -v '^pytest-homeassistant-custom-component' requirements-test.txt \
-            | grep -v '^#' | grep -v '^$' | xargs -r pip install
+      - run: pip install pytest-homeassistant-custom-component==0.13.355
+      - run: python tests/shim_requirements.py | xargs -r pip install
       - run: python -c "import homeassistant.const as c; print('HA', c.__version__)"
       - run: python -m pytest tests/ -q
 
@@ -78,6 +77,7 @@ jobs:
         with:
           python-version: "3.14"
       - run: pip install -r requirements-test.txt
+      - run: python tests/shim_requirements.py | xargs -r pip install
       - run: python -m pytest tests/test_core_contract.py -q
 
   frontend:

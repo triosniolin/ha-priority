@@ -1,15 +1,8 @@
 pytest-homeassistant-custom-component
 
-# Not used by this integration. `async_get_all_descriptions` imports every
-# integration that registers a service in order to read its services.yaml, and
-# the test rig ends up pulling ai_task -> camera -> ffmpeg. Without these the
-# description tests fail on ModuleNotFoundError for something entirely
-# unrelated to priority.
-gazetteer_matcher
-hassil
-home-assistant-intents
-mutagen
-pymicro-vad
-pyspeex-noise
-PyTurboJPEG
-ha-ffmpeg
+# The description tests also need the requirements of every base component that
+# `async_get_all_descriptions` imports. Those are derived from the installed
+# core instead of being listed here, so that a new core dependency cannot turn
+# into a red build on a release that changed nothing in this integration:
+#
+#   python tests/shim_requirements.py | xargs -r pip install

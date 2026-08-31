@@ -145,3 +145,17 @@ def test_entity_service_schemas_still_accept_extra_validation() -> None:
         pass
     else:
         raise AssertionError("entity service schemas stopped rejecting extra keys")
+
+
+def test_base_components_match_the_shim_requirements_list() -> None:
+    """The generated test requirements cover every component core imports.
+
+    `shim_requirements` copies this list instead of calling the function,
+    because calling it imports the modules whose requirements it is trying to
+    work out. This is the check that keeps the copy honest.
+    """
+    from homeassistant.helpers.service import _base_components
+
+    from .shim_requirements import BASE_COMPONENTS
+
+    assert set(_base_components()) == set(BASE_COMPONENTS)
