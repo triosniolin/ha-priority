@@ -5,6 +5,7 @@ pytest-homeassistant-custom-component
 # the test rig ends up pulling ai_task -> camera -> ffmpeg. Without these the
 # description tests fail on ModuleNotFoundError for something entirely
 # unrelated to priority.
+gazetteer_matcher
 hassil
 home-assistant-intents
 mutagen
