@@ -187,6 +187,33 @@ ok(
   "release calls priority.relinquish with the right level"
 );
 
+console.log("\n-- overrides card: names are text, not markup --");
+const evilHass = {
+  states: {
+    "sensor.active_overrides": {
+      state: "1",
+      attributes: {
+        overrides: {
+          "light.porch": {
+            priority: 3,
+            priority_name: "Manual",
+            service: "light.turn_on",
+            friendly_name: '<img src=x onerror="alert(1)">',
+            written_by: "user:<b>x</b>",
+          },
+        },
+      },
+    },
+  },
+  callService: () => {},
+};
+const evil = new registry["priority-overrides-card"]();
+evil.setConfig({});
+evil.hass = evilHass;
+ok(!evil._body.innerHTML.includes("<img"), "a friendly name cannot inject markup");
+ok(evil._body.innerHTML.includes("&lt;img"), "and still shows up, escaped");
+ok(!evil._body.innerHTML.includes("<b>"), "nor can written_by");
+
 console.log("\n-- overrides card: more than one level on one entity --");
 // The sensor used to publish only the winning slot, so an entity held at both
 // Manual and Automatic looked like it was held once and the level underneath
@@ -591,6 +618,13 @@ ok(
 calls.length = 0;
 h.callService("light", "turn_on", {}, { entity_id: ["light.living_room"] });
 ok(calls[0].data.priority === 1, "resolves entities from the target block too");
+
+calls.length = 0;
+h.callService("light", "turn_on", { entity_id: ["light.living_room", "light.other"] });
+ok(
+  calls[0].data.priority === undefined,
+  "a call mixing armed and unarmed targets carries no level at all"
+);
 
 // Back to Default disarms.
 armed._select(5, 1800);

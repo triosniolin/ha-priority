@@ -27,6 +27,14 @@ const PRIORITY_LABELS = {
   5: "Default",
 };
 
+// Entity names and states come from devices and discovery, so never trust them as markup.
+function _esc(value) {
+  return String(value ?? "").replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
+  );
+}
+
 class PriorityOverridesCard extends HTMLElement {
   static getStubConfig() {
     return { entity: "sensor.active_overrides", title: "Priority overrides" };
@@ -214,20 +222,20 @@ class PriorityOverridesCard extends HTMLElement {
           <div class="row${driving ? " driving" : ""}">
             <div class="pill" style="background:${
               PRIORITY_COLORS[p] || "var(--primary-color)"
-            }">${p} · ${lv.priority_name}</div>
+            }">${p} · ${_esc(lv.priority_name)}</div>
             <div class="main">
-              <div class="meta">${lv.service} · set by ${by}${
+              <div class="meta">${_esc(lv.service)} · set by ${_esc(by)}${
               driving ? " · driving" : ""
             }</div>
             </div>
             <div class="lease">${left ? "releases in " + left : "held"}</div>
-            <mwc-button dense data-release="${id}" data-priority="${p}">Release</mwc-button>
+            <mwc-button dense data-release="${_esc(id)}" data-priority="${p}">Release</mwc-button>
           </div>`;
           })
           .join("");
         return `
           <div class="group">
-            <div class="name" data-entity="${id}">${o.friendly_name || id}</div>
+            <div class="name" data-entity="${_esc(id)}">${_esc(o.friendly_name || id)}</div>
             ${rows}
           </div>`;
       })
@@ -657,27 +665,27 @@ class PriorityControlCard extends HTMLElement {
       .map((id) => {
         const st = this._hass.states[id];
         if (!st) {
-          return `<div class="row"><div class="nm"><div class="t missing">${id}</div><div class="s">not found</div></div></div>`;
+          return `<div class="row"><div class="nm"><div class="t missing">${_esc(id)}</div><div class="s">not found</div></div></div>`;
         }
         const acts = this._actions(id);
         const held = overrides[id];
         const badge = held
           ? `<span class="held" style="background:${
               PRIORITY_COLORS[held.priority]
-            }">${held.priority_name}</span>`
+            }">${_esc(held.priority_name)}</span>`
           : "";
         return `
           <div class="row">
             <div class="nm">
-              <div class="t">${st.attributes.friendly_name || id}</div>
-              <div class="s">${st.state}</div>
+              <div class="t">${_esc(st.attributes.friendly_name || id)}</div>
+              <div class="s">${_esc(st.state)}</div>
             </div>
             ${badge}
-            <mwc-button dense data-on="${id}">${acts.onLabel}</mwc-button>
-            <mwc-button dense data-off="${id}">${acts.offLabel}</mwc-button>
+            <mwc-button dense data-on="${_esc(id)}">${acts.onLabel}</mwc-button>
+            <mwc-button dense data-off="${_esc(id)}">${acts.offLabel}</mwc-button>
             ${
               held
-                ? `<mwc-button dense data-rel="${id}">Release</mwc-button>`
+                ? `<mwc-button dense data-rel="${_esc(id)}">Release</mwc-button>`
                 : ""
             }
           </div>`;
@@ -826,8 +834,11 @@ function _wrapCallService(hass) {
     try {
       if (SELECTIONS.size && _isArbitrated(domain, service)) {
         const ids = _targetEntities(data, target);
-        const sel = ids.map((id) => SELECTIONS.get(id)).find(Boolean);
-        if (sel) {
+        const sel = ids.length ? SELECTIONS.get(ids[0]) : undefined;
+        // One priority field covers every target, so a mixed call gets none.
+        const same = (o) =>
+          o && o.priority === sel.priority && o.ttl === sel.ttl;
+        if (sel && ids.every((id) => same(SELECTIONS.get(id)))) {
           data = { ...(data || {}), priority: sel.priority };
           if (sel.ttl > 0 && sel.priority < 5) data.priority_ttl = sel.ttl;
         }
@@ -1511,9 +1522,9 @@ class PriorityRow extends HTMLElement {
            <span class="lvl" style="color:${PRIORITY_COLORS[p]}">${
           PRIORITY_LABELS[p]
         }</span>
-           <span class="act">${_serviceLabel(slot)}</span>
+           <span class="act">${_esc(_serviceLabel(slot))}</span>
            <span class="rem"${
-             slot.expires_at ? ` data-exp="${slot.expires_at}"` : ""
+             slot.expires_at ? ` data-exp="${_esc(slot.expires_at)}"` : ""
            }>${_remainingText(slot.expires_at)}</span>
            ${
              // Default is not an override - there is nothing underneath for it
