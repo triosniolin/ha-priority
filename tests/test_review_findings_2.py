@@ -7,15 +7,25 @@ from __future__ import annotations
 
 import pytest
 from homeassistant.core import Context, State
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import label_registry as lr
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.priority.commands import command_for_state, resolve_toggle
 from custom_components.priority.const import (
+    CONF_MANAGED_AREAS,
+    CONF_MANAGED_LABELS,
+    CONF_SCOPE,
     DOMAIN,
     PRI_MANUAL,
+    SCOPE_SELECTED,
 )
 
 CLIMATE = "climate.one"
 COVER = "cover.one"
+LIGHT = "light.one"
 
 
 async def _slot(hass, entity_id: str, priority: int) -> dict | None:
@@ -24,6 +34,14 @@ async def _slot(hass, entity_id: str, priority: int) -> dict | None:
     )
     array = resp["arrays"].get(entity_id)
     return array["slots"][str(priority)] if array else None
+
+
+async def _entry(hass, options) -> MockConfigEntry:
+    entry = MockConfigEntry(domain=DOMAIN, options=options, unique_id=DOMAIN)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
 
 
 # ----------------------------------------------------------------------
@@ -122,3 +140,50 @@ async def test_thermostat_changed_out_of_band_is_recorded_as_its_mode(
 )
 def test_out_of_band_state_maps_to_a_real_command(domain, state, expected) -> None:
     assert command_for_state(domain, state) == expected
+
+
+# ----------------------------------------------------------------------
+# Label and area selection
+# ----------------------------------------------------------------------
+
+
+async def test_label_added_after_setup_brings_its_domain_under_arbitration(
+    demo_hass,
+) -> None:
+    """The registry listener refreshed the cache but never wrapped the domain."""
+    label = lr.async_get(demo_hass).async_create("held")
+    await _entry(
+        demo_hass, {CONF_SCOPE: SCOPE_SELECTED, CONF_MANAGED_LABELS: [label.label_id]}
+    )
+
+    er.async_get(demo_hass).async_update_entity(CLIMATE, labels={label.label_id})
+    await demo_hass.async_block_till_done()
+
+    await demo_hass.services.async_call(
+        "climate",
+        "set_hvac_mode",
+        {"entity_id": CLIMATE, "hvac_mode": "heat", "priority": PRI_MANUAL},
+        blocking=True,
+    )
+    assert (await _slot(demo_hass, CLIMATE, PRI_MANUAL))["service"] == "set_hvac_mode"
+
+
+async def test_area_selection_includes_entities_that_follow_their_device(
+    demo_hass,
+) -> None:
+    """Only an entity-level area was checked, and that is None when inherited."""
+    area = ar.async_get(demo_hass).async_create("Kitchen")
+    owner = MockConfigEntry(domain="mockdev")
+    owner.add_to_hass(demo_hass)
+    device = dr.async_get(demo_hass).async_get_or_create(
+        config_entry_id=owner.entry_id, identifiers={("mockdev", "lamp")}
+    )
+    dr.async_get(demo_hass).async_update_device(device.id, area_id=area.id)
+    er.async_get(demo_hass).async_update_entity(LIGHT, device_id=device.id)
+
+    await _entry(demo_hass, {CONF_SCOPE: SCOPE_SELECTED, CONF_MANAGED_AREAS: [area.id]})
+
+    await demo_hass.services.async_call(
+        "light", "turn_on", {"entity_id": LIGHT, "priority": PRI_MANUAL}, blocking=True
+    )
+    assert (await _slot(demo_hass, LIGHT, PRI_MANUAL))["service"] == "turn_on"

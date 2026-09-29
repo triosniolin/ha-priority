@@ -24,6 +24,7 @@ import voluptuous as vol
 from homeassistant.const import ATTR_ENTITY_ID, EVENT_LOGBOOK_ENTRY, SERVICE_TOGGLE
 from homeassistant.core import Context, HomeAssistant, Service, ServiceCall, callback
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.storage import Store
@@ -191,11 +192,17 @@ class PriorityManager:
 
         if label_ids or area_ids:
             ent_reg = er.async_get(self.hass)
+            dev_reg = dr.async_get(self.hass)
             for entry in ent_reg.entities.values():
                 if entry.disabled_by is not None:
                     continue
+                area_id = entry.area_id
+                # An entity that follows its device's area stores None here.
+                if area_id is None and entry.device_id is not None:
+                    device = dev_reg.async_get(entry.device_id)
+                    area_id = device.area_id if device is not None else None
                 if (label_ids and (entry.labels & label_ids)) or (
-                    area_ids and entry.area_id in area_ids
+                    area_ids and area_id in area_ids
                 ):
                     managed.add(entry.entity_id)
 

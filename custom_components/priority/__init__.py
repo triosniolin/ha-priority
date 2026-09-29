@@ -47,6 +47,7 @@ from homeassistant.const import (
     Platform,
 )
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from .const import ARBITRATED_SERVICES
@@ -128,6 +129,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: PriorityConfigEntry) -> 
     @callback
     def _on_registry_updated(event: Event) -> None:
         manager.async_invalidate_managed_cache()
+        # A label or area change can bring in the first entity of a domain.
+        async_wrap_all(hass, manager)
 
     entry.async_on_unload(
         hass.bus.async_listen(EVENT_SERVICE_REGISTERED, _on_service_registered)
@@ -137,6 +140,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: PriorityConfigEntry) -> 
     )
     entry.async_on_unload(
         hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, _on_registry_updated)
+    )
+    entry.async_on_unload(
+        hass.bus.async_listen(dr.EVENT_DEVICE_REGISTRY_UPDATED, _on_registry_updated)
     )
 
     async_wrap_all(hass, manager)
