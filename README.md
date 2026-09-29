@@ -405,14 +405,20 @@ the reasons in the section above about why everything defaults to 5.
 
 ## Installation
 
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=triosniolin&repository=ha-priority&category=integration)
+[![Add the integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=priority)
+
 HACS, Custom repositories, add `https://github.com/triosniolin/ha-priority` as an Integration,
 install, restart, then add **Priority Command Arbitration** from Settings, Devices & Services. Or
 copy `custom_components/priority` into your config directory and restart.
 
+Before 0.1.7 the integration did not appear in the Add Integration list at all; on an older version
+the second button above starts the setup directly.
+
 **Hard-refresh your browser afterwards** so the dashboard parts load. The cards register themselves,
 so there is no Lovelace resource step.
 
-Home Assistant 2026.8.1 or newer. Not in the HACS default store yet; that needs a brands PR.
+Home Assistant 2026.8.1 or newer. Not in the HACS default store yet.
 
 ## How it works
 
