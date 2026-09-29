@@ -269,7 +269,7 @@ console.info("%c PRIORITY-OVERRIDES-CARD ", "background:#039be5;color:#fff");
  *   default_ttl: 1800
  *   entities:
  *     - light.living_room
- *     - light.outdoor_lights_2
+ *     - light.porch
  */
 
 const TTL_PRESETS = [
