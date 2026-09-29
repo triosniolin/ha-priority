@@ -173,9 +173,14 @@ def _build_wrapper(
     hass: HomeAssistant, manager: PriorityManager, domain: str, service: str
 ):
     """Build the wrapper coroutine for one domain service."""
+    captured = manager.async_get_original(domain, service)
 
     async def _wrapped(call: ServiceCall) -> ServiceResponse:
         original = manager.async_get_original(domain, service)
+        # Unwrapped while a foreign proxy still calls us: pass straight through.
+        orphaned = original is None
+        if orphaned:
+            original = captured
         if original is None:
             raise RuntimeError(f"priority lost the original handler for {domain}.{service}")
 
@@ -222,6 +227,9 @@ def _build_wrapper(
             )
             task = hass.async_run_hass_job(original.job, forwarded)
             return await task if task is not None else None
+
+        if orphaned:
+            return await _passthrough()
 
         targets = _resolve_targets(hass, call)
 
@@ -319,6 +327,10 @@ def async_wrap_service(
         return False
     if getattr(existing.job.target, _WRAPPER_MARKER, False):
         return False
+    # A proxy registered over our wrapper still calls it; re-wrapping would store the
+    # proxy as our original and loop (issue #1). Removal forgets the original.
+    if manager.async_get_original(domain, service) is not None:
+        return False
 
     manager.async_store_original(domain, service, existing)
     hass.services.async_register(
@@ -343,7 +355,12 @@ def async_unwrap_service(
     registry = hass.services.async_services_internal()
     current = registry.get(domain, {}).get(service)
     if current is not None and not getattr(current.job.target, _WRAPPER_MARKER, False):
-        # Something re-registered over our wrapper; leave that alone.
+        _LOGGER.warning(
+            "Priority could not unwrap %s.%s: another integration registered over it, "
+            "so calls still pass through ours, unarbitrated, until Home Assistant restarts",
+            domain,
+            service,
+        )
         return
 
     # Registering fires EVENT_SERVICE_REGISTERED synchronously, and our own
