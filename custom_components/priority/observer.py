@@ -21,7 +21,6 @@ import logging
 
 from homeassistant.const import (
     EVENT_STATE_CHANGED,
-    STATE_ON,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
@@ -29,6 +28,7 @@ from homeassistant.core import Event, EventStateChangedData, HomeAssistant, call
 from homeassistant.util import dt as dt_util
 
 from .array import Slot
+from .commands import command_for_state
 from .const import ARBITRATED_SERVICES, PRI_DEFAULT
 from .store import PriorityManager
 
@@ -92,7 +92,10 @@ def async_start_observer(hass: HomeAssistant, manager: PriorityManager):
         if manager.async_is_our_context(new_state.context):
             return
 
-        service = "turn_on" if new_state.state == STATE_ON else "turn_off"
+        command = command_for_state(domain, new_state.state)
+        if command is None:
+            return
+        service, slot_data = command
         if service not in ARBITRATED_SERVICES.get(domain, frozenset()):
             return
 
@@ -102,7 +105,7 @@ def async_start_observer(hass: HomeAssistant, manager: PriorityManager):
             Slot(
                 domain=domain,
                 service=service,
-                data={},
+                data=slot_data,
                 written_at=dt_util.utcnow(),
                 written_by="out_of_band",
             ),

@@ -21,7 +21,7 @@ from datetime import timedelta
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.const import ATTR_ENTITY_ID, EVENT_LOGBOOK_ENTRY, STATE_ON
+from homeassistant.const import ATTR_ENTITY_ID, EVENT_LOGBOOK_ENTRY, SERVICE_TOGGLE
 from homeassistant.core import Context, HomeAssistant, Service, ServiceCall, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
@@ -30,6 +30,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .array import PriorityArray, Slot
+from .commands import resolve_toggle
 from .const import (
     ARBITRATED_SERVICES,
     ATTR_PRIORITY,
@@ -56,7 +57,6 @@ from .const import (
     SCOPE_ALL,
     STORAGE_KEY,
     STORAGE_VERSION,
-    TOGGLE_SERVICES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -488,17 +488,10 @@ class PriorityManager:
     def async_resolve_service(
         self, domain: str, service: str, entity_id: str
     ) -> str:
-        """Resolve a state-dependent service to a concrete one.
-
-        ``toggle`` has no stable meaning inside an array: replaying it later
-        would flip the device rather than restore it. It is resolved against
-        current state at the moment of the call, exactly once.
-        """
-        if (mapping := TOGGLE_SERVICES.get(service)) is None:
+        """Resolve ``toggle`` against current state, once, at the moment of the call."""
+        if service != SERVICE_TOGGLE:
             return service
-        when_on, when_off = mapping
-        state = self.hass.states.get(entity_id)
-        return when_on if state is not None and state.state == STATE_ON else when_off
+        return resolve_toggle(domain, self.hass.states.get(entity_id))
 
     @callback
     def async_validate_command(

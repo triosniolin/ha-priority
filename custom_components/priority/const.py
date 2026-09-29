@@ -186,11 +186,3 @@ ARBITRATED_SERVICES: Final[dict[str, frozenset[str]]] = {
     "input_boolean": frozenset({"turn_on", "turn_off", "toggle"}),
     "input_number": frozenset({"set_value"}),
 }
-
-# Services that have no stable meaning inside a priority array, because their
-# result depends on the state at the moment of the call. These are resolved to
-# a concrete service before the slot is written.
-TOGGLE_SERVICES: Final[dict[str, tuple[str, str]]] = {
-    # domain service -> (service when currently "on", service when not)
-    "toggle": ("turn_off", "turn_on"),
-}
