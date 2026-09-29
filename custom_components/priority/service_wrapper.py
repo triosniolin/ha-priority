@@ -1,20 +1,8 @@
-"""Interception of domain services so priority arbitration can run.
+"""Wrap arbitrated services by re-registering over them; HA has no service middleware.
 
-Home Assistant has no middleware hook for service calls, but the service
-registry is a plain dict that can be re-registered into. For each arbitrated
-service we capture the :class:`homeassistant.core.Service` that is already
-registered, then register a wrapper of our own over the same name. The wrapper
-holds the arbitration decision; the captured original is the only thing that
-ever touches a device.
-
-Two properties matter and are load-bearing:
-
-* The wrapper's schema is the original schema plus one optional ``priority``
-  field. Every other field keeps its original validation, so nothing an
-  integration expects can be lost.
-* Unmanaged targets are forwarded to the original handler untouched, in the
-  same call, so a service call that spans managed and unmanaged entities
-  behaves exactly as it did before.
+The wrapper's schema is the original plus the priority fields, and unmanaged
+targets are forwarded to the original in the same call, so nothing a caller or
+integration relies on changes.
 """
 
 from __future__ import annotations
@@ -52,11 +40,7 @@ _TARGET_FIELDS = frozenset(
 # Marks a handler as one of ours, so a reload cannot wrap a wrapper.
 _WRAPPER_MARKER = "_priority_wrapper"
 
-# Carries the pre-validation payload alongside the validated one. Some domains
-# rewrite their data during validation - `light` folds every colour and
-# brightness field into a single `params` dict - so the validated form cannot be
-# fed back through the same schema a second time. Slots therefore store what the
-# caller actually asked for, and validation happens once per dispatch.
+# Pre-validation payload: light folds colour into `params`, so validated data can't be revalidated.
 _RAW_KEY = "__priority_raw"
 
 PRIORITY_FIELD: dict[Any, Any] = {
@@ -70,7 +54,7 @@ PRIORITY_FIELD: dict[Any, Any] = {
 
 
 def _ttl_seconds(value: Any) -> float | None:
-    """Normalise a TTL to seconds, treating 0 and None as "no lease"."""
+    """Seconds, with 0 and None both meaning no lease."""
     if value is None:
         return None
     if isinstance(value, timedelta):
@@ -81,15 +65,7 @@ def _ttl_seconds(value: Any) -> float | None:
 
 
 def _extend_schema(schema: Any) -> Any:
-    """Return the original schema with an optional priority field added.
-
-    Entity service schemas are built by ``cv.make_entity_service_schema`` as a
-    ``vol.Schema`` wrapping a ``vol.All``. Rather than trying to unpick that
-    structure, validate priority separately and hand the rest to the original
-    schema untouched. That keeps every integration's own validation intact,
-    including custom validators and ``extra=`` behaviour, and keeps validation
-    errors surfacing from the service registry where callers expect them.
-    """
+    """Validate our fields separately; the original schema sees the rest untouched."""
     if schema is None:
         return None
 
@@ -124,39 +100,15 @@ def _extend_schema(schema: Any) -> Any:
 
 @callback
 def _resolve_targets(hass: HomeAssistant, call: ServiceCall) -> list[str]:
-    """Resolve a call's target selection to concrete entity ids.
+    """Resolve a call's targets to entity ids, including ``all``, which must never bypass a hold.
 
-    ``entity_id: all`` is resolved rather than waved through. An earlier version
-    bailed out here on the grounds that arbitrating `all` meant "writing every
-    array in the house", which was simply wrong: core resolves the sentinel
-    inside ``entity_service_call`` against *that platform's* entities, so
-    ``light.turn_off`` with `all` reaches lights and nothing else. The bail-out
-    meant any hold - including a safety interlock at priority 2 - could be
-    driven straight through with no error and no trace. Confirmed live: a
-    post-restart `light.turn_off` / `entity_id: all` sweep defeated a Manual
-    hold while the array went on reporting it was in control.
-
-    It was also inconsistent. `homeassistant.turn_off` expands to per-domain
-    calls carrying a concrete entity list, so the same user intent was
-    arbitrated or bypassed depending only on which service the caller reached
-    for.
-
-    The full domain is returned, **not** ``async_managed_entities()``: the
-    caller splits managed from unmanaged and forwards the remainder, and
-    pre-filtering here would silently drop excluded entities from the sweep
-    altogether.
-
-    Resolution failures are deliberately **not** caught. Passing a call through
-    when we cannot tell what it targets is precisely the silent-override-defeat
-    this method exists to prevent; a visible error is recoverable, a quietly
-    ignored hold is not. With pre-validated call data this path is effectively
-    unreachable.
+    Returns the whole domain for ``all``, not the managed set: the caller forwards
+    the unmanaged remainder. Resolution errors propagate, because passing an
+    unresolvable call through would silently defeat a hold.
     """
     entity_id = call.data.get(ATTR_ENTITY_ID)
 
     if entity_id == ENTITY_MATCH_NONE:
-        # `none` means target nothing - the opposite of `all`, and previously
-        # conflated with it.
         return []
 
     if entity_id == ENTITY_MATCH_ALL:
@@ -172,7 +124,6 @@ def _resolve_targets(hass: HomeAssistant, call: ServiceCall) -> list[str]:
 def _build_wrapper(
     hass: HomeAssistant, manager: PriorityManager, domain: str, service: str
 ):
-    """Build the wrapper coroutine for one domain service."""
     captured = manager.async_get_original(domain, service)
 
     async def _wrapped(call: ServiceCall) -> ServiceResponse:
@@ -187,25 +138,15 @@ def _build_wrapper(
         raw: dict[str, Any] = dict(call.data.get(_RAW_KEY) or call.data)
 
         async def _passthrough(entity_ids: list[str] | None = None) -> ServiceResponse:
-            """Run the original handler, optionally narrowed to some entities."""
             if entity_ids is None:
-                # Nothing to re-target, so reuse the already-validated payload.
-                #
-                # Both our added fields must come off. Core's
-                # remove_entity_service_fields only strips
-                # cv.ENTITY_SERVICE_FIELDS, so anything left here is handed to
-                # the entity method as a keyword argument. Domains whose
-                # handlers take **kwargs (cover, climate) swallow it silently;
-                # ones with a strict signature do not - fan.set_percentage
-                # raises TypeError on an otherwise ordinary call.
+                # Strip our fields: core passes leftovers as kwargs, and fan.set_percentage raises.
                 data = {
                     key: value
                     for key, value in call.data.items()
                     if key not in (ATTR_PRIORITY, ATTR_PRIORITY_TTL, _RAW_KEY)
                 }
             else:
-                # Re-targeting means re-validating, because some domains rewrite
-                # their payload during validation.
+                # Re-targeting means re-validating the raw payload.
                 narrowed = {
                     key: value
                     for key, value in raw.items()
@@ -244,9 +185,7 @@ def _build_wrapper(
         if not managed:
             return await _passthrough()
 
-        # A response-returning service cannot be meaningfully arbitrated: the
-        # caller wants data back, so suppressing the call would produce a wrong
-        # answer rather than a deferred one.
+        # Suppressing a response-returning call would hand back a wrong answer.
         if call.return_response:
             return await _passthrough()
 
@@ -261,8 +200,7 @@ def _build_wrapper(
                 "there is nothing for it to expire back to"
             )
 
-        # Group by the service each entity resolves to, because `toggle` can
-        # resolve differently per entity depending on its current state.
+        # Grouped by resolved service: toggle can resolve differently per entity.
         winners: dict[str, list[str]] = defaultdict(list)
         for entity_id in managed:
             resolved = manager.async_resolve_service(domain, service, entity_id)
@@ -318,7 +256,6 @@ def _build_wrapper(
 def async_wrap_service(
     hass: HomeAssistant, manager: PriorityManager, domain: str, service: str
 ) -> bool:
-    """Replace one registered service with an arbitrating wrapper."""
     if manager.suspended:
         return False
     registry = hass.services.async_services_internal()
@@ -348,7 +285,6 @@ def async_wrap_service(
 def async_unwrap_service(
     hass: HomeAssistant, manager: PriorityManager, domain: str, service: str
 ) -> None:
-    """Put the original handler back."""
     original = manager.async_forget_original(domain, service)
     if original is None:
         return
@@ -363,8 +299,7 @@ def async_unwrap_service(
         )
         return
 
-    # Registering fires EVENT_SERVICE_REGISTERED synchronously, and our own
-    # listener would wrap the handler straight back again.
+    # Registering fires EVENT_SERVICE_REGISTERED synchronously; suspend or we re-wrap it.
     was_suspended = manager.suspended
     manager.async_suspend(True)
     try:
@@ -382,7 +317,6 @@ def async_unwrap_service(
 
 @callback
 def async_wrap_all(hass: HomeAssistant, manager: PriorityManager) -> None:
-    """Wrap every arbitrated service that is currently registered."""
     for domain in manager.async_managed_domains():
         for service in ARBITRATED_SERVICES.get(domain, frozenset()):
             async_wrap_service(hass, manager, domain, service)
@@ -390,7 +324,6 @@ def async_wrap_all(hass: HomeAssistant, manager: PriorityManager) -> None:
 
 @callback
 def async_unwrap_all(hass: HomeAssistant, manager: PriorityManager) -> None:
-    """Restore every service we wrapped."""
     was_suspended = manager.suspended
     manager.async_suspend(True)
     try:
