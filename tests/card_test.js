@@ -1,5 +1,4 @@
-/* Minimal DOM stub: enough to instantiate the cards and drive their render
- * paths, so the logic is exercised even though we cannot click the real thing. */
+/* Minimal DOM stub: no layout, CSS or real events; clicking and positioning belong in e2e. */
 
 const registry = {};
 const made = [];
@@ -31,21 +30,16 @@ class El {
     return this._find(sel);
   }
   _find(sel) {
-    // Only needs to find the elements the cards actually wire handlers onto.
     const attr = /\[([a-z-]+)(?:="([^"]*)")?\]/.exec(sel);
     const out = [];
     const re = attr
       ? new RegExp(`${attr[1]}="([^"]*)"`, "g")
       : new RegExp(`id="${(sel || "").replace("#", "")}"`, "g");
-    // A real querySelectorAll hands back the same nodes every time. Without
-    // memoising, a handler attached on one call lands on a throwaway object and
-    // the next call sees an element that was never wired.
+    // Memoised: a real querySelectorAll returns the same nodes, so handlers must stick.
     this._findCache = this._findCache || {};
     let m;
     while ((m = re.exec(this._html))) {
-      // `[data-menu="t"]` must not match data-menu="p". Without this the stub
-      // hands back the first element carrying the attribute at all, and a test
-      // that thinks it is driving one control is really driving another.
+      // `[data-menu="t"]` must not match data-menu="p", or a test drives the wrong control.
       if (attr && attr[2] !== undefined && m[1] !== attr[2]) continue;
       const key = `${attr ? attr[1] : "id"}=${m[1]}`;
       let stub = this._findCache[key];
@@ -76,12 +70,7 @@ class El {
         e.disabled = false;
         e.hidden = true;
         e.style = {};
-        // Carry the element's own inner markup, so things built inside it (the
-        // picker menus) can actually be found and clicked. Finds the real
-        // closing tag rather than the first one of any kind - a menu <div> full
-        // of <button> options would otherwise be cut off at its first option.
-        // Only valid for markup that never nests a tag inside itself, which is
-        // all this file emits.
+        // Carry inner markup up to the matching close tag; valid only for tags that never self-nest.
         const html = this.shadowRoot.innerHTML;
         const open = new RegExp(
           `<([a-z][a-z0-9-]*)[^>]*\\bid="${id}"[^>]*>`,
@@ -125,8 +114,7 @@ global.customElements = {
     made.push(n);
   },
 };
-// The more-info patch guards on `window.customElements`, which in a browser is
-// the same object as the bare global. Mirror that here or the patch no-ops.
+// In a browser window.customElements is the bare global; the more-info patch checks the former.
 global.window.customElements = global.customElements;
 global.console.info = () => {};
 
@@ -215,9 +203,6 @@ ok(evil._body.innerHTML.includes("&lt;img"), "and still shows up, escaped");
 ok(!evil._body.innerHTML.includes("<b>"), "nor can written_by");
 
 console.log("\n-- overrides card: more than one level on one entity --");
-// The sensor used to publish only the winning slot, so an entity held at both
-// Manual and Automatic looked like it was held once and the level underneath
-// had silently vanished.
 const multiHass = {
   states: {
     "sensor.active_overrides": {
@@ -286,8 +271,6 @@ cc.setConfig({ entities: ["light.living_room", "cover.garage", "lock.front"] });
 cc.hass = hass;
 ok(cc._controls.innerHTML.includes("1 - Manual Emergency"), "priority dropdown populated");
 ok(cc._controls.innerHTML.includes("30 minutes"), "lease presets populated");
-// Same reason as the more-info row: a native <select> is an OS window in the
-// Android app and gets dismissed out from under the tap.
 ok(!cc._controls.innerHTML.includes("<select"), "control card uses no native select");
 ok(
   (cc._controls.innerHTML.match(/data-v="/g) || []).length === 5 + TTL_COUNT,
@@ -360,10 +343,6 @@ ok(
 );
 ok(!Feat.isSupported(undefined), "undefined stateObj handled");
 
-// The feature mounts the same row the more-info dialog uses, but a tile card is
-// a fraction of that width. Both of these guard the fix for the row painting
-// outside the card: the compact attribute drives the narrow layout, and the
-// host style opts out of the single-control-row height the tile card imposes.
 const feat = new Feat();
 feat.setConfig({});
 feat.hass = hass;
@@ -422,7 +401,6 @@ ok(
 );
 ok(r.shadowRoot.getElementById("t").disabled === true, "lease disabled at Default");
 
-// The bug that made the dropdowns unusable: rebuilding on every hass update.
 const before = r.shadowRoot.innerHTML;
 r.hass = { ...hass };
 r.hass = { ...hass };
@@ -452,8 +430,7 @@ const tree = {
       domain: "light",
       service: "turn_on",
       data: {},
-      // +30s so the value sits safely inside the 24-minute bucket; an exact
-      // boundary floors to 23 as soon as any time elapses, which made this flaky.
+      // +30s: an exact boundary floors to 23 as soon as any time elapses.
       expires_at: new Date(Date.now() + 24 * 60000 + 30000).toISOString(),
     },
     "4": {
@@ -509,7 +486,6 @@ ok(
 );
 ok(calls[0].s !== "relinquish_all", "and does NOT clear the others");
 
-// The whole-array button must say what it does.
 r._array = { effective_priority: 1, slots: tree.slots };
 r._paintStatus();
 ok(
@@ -520,8 +496,6 @@ calls.length = 0;
 r._release();
 ok(calls[0].s === "relinquish_all", "and it really does call relinquish_all");
 
-// The countdown ticks once a second; rebuilding the list that often would put a
-// button under the pointer and destroy it - the dropdown bug again.
 const htmlBefore = r.shadowRoot.getElementById("slots").innerHTML;
 r._paintSlots();
 r._paintSlots();
@@ -573,7 +547,6 @@ const internals = window.__priorityInternals;
 const SEL = internals.selections;
 SEL.clear();
 
-// Build a hass whose callService we can observe, then wrap it the way the row does.
 const mkHass = () => {
   const h = { states: hass.states, callService: (d, s, data, target) => { calls.push({ d, s, data, target }); } };
   internals.wrapCallService(h);
@@ -586,7 +559,6 @@ h.callService("light", "turn_on", { entity_id: "light.living_room", brightness_p
 ok(calls[0].data.priority === undefined, "nothing selected -> ordinary call passes through untouched");
 ok(calls[0].data.brightness_pct === 47, "payload preserved");
 
-// Now arm a selection the way the picker does.
 const armed = mkRow("light.living_room");
 armed._priority = 1;
 armed._ttl = 1800;
@@ -626,19 +598,16 @@ ok(
   "a call mixing armed and unarmed targets carries no level at all"
 );
 
-// Back to Default disarms.
 armed._select(5, 1800);
 ok(!SEL.has("light.living_room"), "Default clears the selection");
 calls.length = 0;
 h.callService("light", "turn_on", { entity_id: "light.living_room" });
 ok(calls[0].data.priority === undefined, "disarmed -> pass-through again");
 
-// Closing the dialog must disarm, or a later toggle elsewhere would carry it.
 armed._select(1, 0);
 armed.disconnectedCallback();
 ok(!SEL.has("light.living_room"), "disconnect clears the selection");
 
-// Double-wrapping must not stack.
 const h2 = mkHass();
 internals.wrapCallService(h2);
 internals.wrapCallService(h2);
@@ -650,9 +619,7 @@ console.log("\n-- more-info injection --");
 const inject = window.__priorityInternals.injectPriorityRow;
 ok(typeof inject === "function", "injection helper exposed for testing");
 
-// It reaches into compiled frontend internals, so the thing that actually
-// matters is that it never throws and never half-renders, whatever shape the
-// host turns out to be after some future HA update.
+// Unsupported internals: whatever shape the host takes, it must never throw or half-render.
 const bad = [
   undefined,
   null,
@@ -674,7 +641,6 @@ for (const b of bad) {
 }
 ok(!injThrew, "injection survives every malformed host: " + (injThrew || "none"));
 
-// A well-formed host must actually get a row.
 const goodHost = { shadowRoot: new El("s"), hass, stateObj: hass.states["light.living_room"] };
 goodHost.stateObj.entity_id = "light.living_room";
 let appended = null;
@@ -688,7 +654,6 @@ ok(
 );
 ok(appended && appended.hass === hass, "row wired to hass");
 
-// A non-arbitrated entity must not get one.
 const sensorHost = {
   shadowRoot: new El("s"),
   hass,
@@ -700,7 +665,6 @@ sensorHost.shadowRoot.querySelector = () => null;
 inject(sensorHost);
 ok(!sensorAppended, "no row on a sensor");
 
-// The prototype patch must chain, not replace, the original updated().
 let originalRan = false;
 let patchedHost = null;
 class FakeMoreInfo {
@@ -731,10 +695,6 @@ setTimeout(() => {
 
   console.log("\n-- hand-rolled pickers --");
 
-  // Neither a native <select> nor ha-select survives the Android companion app:
-  // the first opens an OS window the WebView dismisses on any relayout, and the
-  // second registers no items at all when built imperatively, so its menu lists
-  // the levels but none of them can be chosen.
   const pk = mkRow("switch.pump");
   ok(
     !pk.shadowRoot.innerHTML.includes("<select") &&
@@ -757,8 +717,6 @@ setTimeout(() => {
   pBtn.onclick();
   ok(pMenu.hidden === false, "tapping the button opens the menu");
 
-  // The ticker rewrites the row once a second. With a menu open that can shift
-  // the button it was positioned against, so it has to hold off.
   pk._array = { effective_priority: 3, slots: { "3": { service: "turn_on", data: {} } } };
   pk._paintSlots();
   ok(
@@ -783,13 +741,11 @@ setTimeout(() => {
     "the closed picker shows what was chosen"
   );
 
-  // The button toggles: a second tap puts the list away again.
   pBtn.onclick();
   ok(pMenu.hidden === false, "reopens");
   pBtn.onclick();
   ok(pMenu.hidden === true, "tapping the button again closes it");
 
-  // Both menus open at once would paint over each other.
   pBtn.onclick();
   pk.shadowRoot.getElementById("t").onclick();
   ok(
@@ -798,15 +754,12 @@ setTimeout(() => {
     "opening one picker closes the other"
   );
 
-  // Nothing positions the list, so nothing can strand it - but a caller can
-  // still put everything away.
   pk._closeMenus();
   ok(
     pk.shadowRoot.getElementById("t-menu").hidden === true,
     "_closeMenus puts every open list away"
   );
 
-  // Default is not an override, so the lease picker is meaningless there.
   const lease = mkRow("switch.pump");
   ok(
     lease.shadowRoot.getElementById("t").disabled === true,

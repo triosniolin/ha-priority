@@ -1,14 +1,5 @@
-/*
- * priority-overrides-card
- *
- * Shows every entity currently held above the Default level, what is holding
- * it, who set it, and how long its lease has left - with a one-click release
- * per row.
- *
- * Deliberately dependency-free vanilla custom elements: no build step, no CDN,
- * nothing to break when Home Assistant bumps its frontend. It reads only
- * `sensor.active_overrides`, whose attributes already carry everything needed.
- */
+/* priority-overrides-card: everything held above Default, with per-level release.
+ * Dependency-free vanilla custom elements, so a frontend bump has nothing to break. */
 
 const PRIORITY_COLORS = {
   1: "var(--error-color, #db4437)",
@@ -57,7 +48,7 @@ class PriorityOverridesCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     this._render();
-    // Keep the lease countdowns moving without waiting on a state change.
+    // Leases count down between state changes.
     if (!this._timer) {
       this._timer = window.setInterval(() => this._renderRowsOnly(), 1000);
     }
@@ -102,8 +93,7 @@ class PriorityOverridesCard extends HTMLElement {
   }
 
   _moreInfo(entityId) {
-    // Must be a CustomEvent: a plain Event drops `detail`, and the frontend
-    // reads entityId from exactly there.
+    // Must be a CustomEvent: a plain Event drops `detail`, where the frontend reads entityId.
     this.dispatchEvent(
       new CustomEvent("hass-more-info", {
         bubbles: true,
@@ -203,8 +193,7 @@ class PriorityOverridesCard extends HTMLElement {
     this._body.innerHTML = ids
       .map((id) => {
         const o = overrides[id];
-        // Older sensor payloads carried only the winning slot. Fall back to it
-        // so a cached card against a new sensor, or the reverse, still renders.
+        // Older sensors publish only the winning slot.
         const levels = o.levels || {
           [String(o.priority)]: o,
         };
@@ -272,18 +261,8 @@ window.customCards.push({
 console.info("%c PRIORITY-OVERRIDES-CARD ", "background:#039be5;color:#fff");
 
 
-/*
- * priority-control-card
+/* priority-control-card: one level and lease, shared by every entity listed.
  *
- * The operating end of the system. The overrides card shows what is held and
- * lets you release it; this one is how you take hold in the first place.
- *
- * Pick a level and a lease at the top, then act on any entity in the list. The
- * two controls are shared rather than repeated per row because the common case
- * is "put these on at Manual Emergency for half an hour", not a different level
- * for every light.
- *
- * Example:
  *   type: custom:priority-control-card
  *   title: Emergency lighting
  *   default_priority: 1
@@ -373,8 +352,7 @@ class PriorityControlCard extends HTMLElement {
       entity_id: entityId,
       priority: this._priority,
     };
-    // A lease is meaningless at Default - there is nothing below to fall back
-    // to - and the integration rejects it outright, so do not send one.
+    // The integration rejects a lease at Default.
     if (this._ttl > 0 && this._priority < 5) {
       data.priority_ttl = this._ttl;
     }
@@ -417,8 +395,7 @@ class PriorityControlCard extends HTMLElement {
           letter-spacing: 0.04em;
           color: var(--secondary-text-color);
         }
-        /* This card renders into light DOM, so its <style> is global. Every
-           rule below is scoped to .controls so it cannot reach HA's own UI. */
+        /* Light DOM: this <style> is global, so every rule is scoped to .controls. */
         .controls .pick {
           display: flex;
           align-items: center;
@@ -440,12 +417,7 @@ class PriorityControlCard extends HTMLElement {
           white-space: nowrap;
         }
         .controls .caret { font-size: 0.7em; opacity: 0.7; }
-        /* This card lives in a sections view, where HA gives it a computed row
-           span and an ha-card of height:100%. A list that grows the card just
-           spills out the bottom of it. So here the list overlays instead.
-           position:absolute against .field, never fixed: absolute resolves
-           against an ancestor we control, so a transformed ancestor cannot
-           throw it off the way it did in the more-info dialog. */
+        /* A sections view fixes the card height, so the list overlays. Absolute, never fixed. */
         .controls .menu {
           position: absolute;
           top: 100%;
@@ -523,14 +495,7 @@ class PriorityControlCard extends HTMLElement {
     this._renderRows();
   }
 
-  /* Same inline pickers as the more-info row, and for the same reason: a native
-   * <select> opens an OS-level window that the Android companion app dismisses
-   * out from under you. See the comment on PriorityRow._wirePicker.
-   *
-   * This card renders into light DOM, so ids are not safe here - two control
-   * cards on one dashboard would collide. Everything is addressed by data
-   * attribute, scoped to this card's own controls element.
-   */
+  // Light DOM, so ids would collide between two cards; address by data attribute.
   _fieldMarkup(key, label, items, current) {
     const hit = items.find(([v]) => v === current);
     const opts = items
@@ -593,9 +558,7 @@ class PriorityControlCard extends HTMLElement {
       menu.hidden = false;
       if (btn.setAttribute) btn.setAttribute("aria-expanded", "true");
     };
-    // The list floats over the rows beneath it, so a tap anywhere else has to
-    // put it away - including a tap elsewhere inside this same card, which is
-    // where the rows it is covering actually are.
+    // The list covers this card's own rows, so a tap anywhere else, even inside it, closes it.
     if (!this._outside && document.addEventListener) {
       this._outside = (e) => {
         const t = e && e.target;
@@ -615,8 +578,7 @@ class PriorityControlCard extends HTMLElement {
           apply(v);
           close();
           this._paintFieldLabel(key, items());
-          // Only the rows and the note depend on the selection; re-rendering
-          // the controls here would tear out the very button just tapped.
+          // Re-rendering the controls would tear out the button just tapped.
           this._renderRows();
         };
       });
@@ -715,14 +677,7 @@ window.customCards.push({
 });
 
 
-/* ===================================================================
- * Shared priority row
- *
- * One element, used by both the tile-card feature and the more-info
- * injection. Everything below is domain-agnostic on purpose: there is no
- * per-domain code anywhere, only the DOMAIN_ACTIONS verb table above, so a
- * light, a switch, a cover, an input_boolean and a valve all behave the same.
- * =================================================================== */
+/* ---- Shared priority row, used by the tile feature and the more-info injection ---- */
 
 // Must track ARBITRATED_SERVICES in const.py.
 const ARBITRATED_DOMAINS = new Set([
@@ -740,10 +695,7 @@ const ARBITRATED_DOMAINS = new Set([
   "input_number",
 ]);
 
-// Must track ARBITRATED_SERVICES in const.py. Used to decide whether a call is
-// one the integration will accept a priority on - sending the field to a
-// service that does not declare it would fail schema validation and break an
-// ordinary click.
+// Must track ARBITRATED_SERVICES in const.py; priority on any other service fails validation.
 const ARBITRATED_SERVICES = {
   light: ["turn_on", "turn_off", "toggle"],
   switch: ["turn_on", "turn_off", "toggle"],
@@ -793,21 +745,9 @@ const ARBITRATED_SERVICES = {
   input_number: ["set_value"],
 };
 
-/* -------------------------------------------------------------------
- * Command interception
- *
- * The pickers are modifiers, not commands. You pick a level and a lease, then
- * use the entity's ordinary controls - the toggle, the brightness slider, the
- * position handle - and those commands carry the level.
- *
- * That means catching the service calls the built-in controls make.
- * `hass.callService` is the single funnel every one of them goes through, so
- * it is wrapped once and consults the selection map below. With nothing
- * selected the map is empty and the wrapper is a pure pass-through, so an
- * ordinary click behaves exactly as it always did.
- * ------------------------------------------------------------------- */
+/* ---- Command interception: pickers modify the entity's own controls via callService ---- */
 
-// entity_id -> { priority, ttl }. Only non-Default selections are ever stored.
+// entity_id -> { priority, ttl }. Default is never stored, so an empty map means pure pass-through.
 const SELECTIONS = new Map();
 
 function _isArbitrated(domain, service) {
@@ -912,7 +852,7 @@ const ROW_STYLE = `
     font: inherit;
     font-size: 0.85rem;
     cursor: pointer;
-    /* Comfortably tappable on a phone without making the desktop row taller. */
+    /* Tappable on a phone. */
     min-height: 36px;
   }
   .pick[disabled] { opacity: 0.5; cursor: default; }
@@ -922,10 +862,7 @@ const ROW_STYLE = `
     white-space: nowrap;
   }
   .caret { font-size: 0.7em; opacity: 0.7; }
-  /* The options list sits in normal flow and pushes the rest of the row down.
-     It is not an overlay on purpose: an overlay has to be positioned against
-     something, and inside the more-info dialog there is nothing dependable to
-     position against. See the comment on _wirePicker. */
+  /* Inline, not an overlay: more-info has nothing dependable to position against. */
   .menu {
     display: grid;
     gap: 2px;
@@ -964,8 +901,6 @@ const ROW_STYLE = `
     border-radius: 6px;
     opacity: 0.65;
   }
-  /* The winning slot is the one actually driving the device; everything else
-     is queued underneath it. */
   .slot.win {
     opacity: 1;
     background: var(--secondary-background-color);
@@ -1000,7 +935,7 @@ const ROW_STYLE = `
     background: var(--secondary-background-color);
     color: var(--primary-text-color);
   }
-  /* Keeps the Default row's columns lined up with the ones that have a button. */
+  /* Keeps the Default row aligned with rows that have a button. */
   .rel-spacer { flex: 0 0 auto; width: 62px; }
   select {
     padding: 6px 8px;
@@ -1031,13 +966,7 @@ const ROW_STYLE = `
   }
   .spacer { flex: 1 1 auto; }
 
-  /* Compact mode, set by the tile-card feature.
-   *
-   * The more-info dialog is a wide sheet; a tile card can be half a column. The
-   * slot row is built out of fixed minimum widths that add up to more than that,
-   * so at tile width the countdown and the Release button were pushed past the
-   * card edge and painted outside it. Here the level name is the only thing
-   * allowed to grow, and it truncates rather than shoving its neighbours out. */
+  /* Compact (tile feature): fixed widths overflow a half column, so only the level name flexes. */
   :host([compact]) .wrap { padding: 4px 0 2px; gap: 6px; }
   :host([compact]) .slots { font-size: 0.72rem; padding: 2px 0 4px; }
   :host([compact]) .slot { gap: 6px; padding: 2px 6px; }
@@ -1049,12 +978,7 @@ const ROW_STYLE = `
   }
   :host([compact]) .act { flex: 0 0 auto; }
   :host([compact]) .rem { min-width: 0; }
-  /* Elastic level names fit the width, but they also made every row start its
-     action and countdown at a different x. Subgrid puts the columns back in
-     line while still letting the level name be the one that shrinks. Guarded,
-     because without subgrid the declaration is invalid and the slot would
-     collapse to one cell per line; unsupported browsers keep the flex layout
-     above, ragged but readable. */
+  /* Subgrid re-aligns columns; guarded, since without it each slot collapses to one column. */
   @supports (grid-template-columns: subgrid) {
     :host([compact]) .slots {
       display: grid;
@@ -1073,18 +997,9 @@ const ROW_STYLE = `
   :host([compact]) .rel-spacer { display: none; }
   :host([compact]) .rel-one { padding: 2px 6px; font-size: 0.68rem; }
   :host([compact]) select { font-size: 0.8rem; padding: 4px 6px; }
-  /* A tile card can be half a column - about 230px. A 120px flex basis needs
-     more than that for two of them, so the pickers wrapped onto two lines and
-     the row grew past the height the tile card had been given, painting over
-     its bottom edge. Zero basis lets them share whatever width there is and
-     truncate instead of wrapping. */
+  /* Zero basis: at ~230px tile width a 120px basis wrapped and overflowed the tile. */
   :host([compact]) .picker { flex: 1 1 0; min-width: 0; }
-  /* In the more-info dialog the list grows the row and the dialog scrolls. A
-     tile card cannot do that: it has been given a fixed height by the sections
-     grid, so a taller row paints straight through its bottom edge. Here the
-     list overlays instead. The .top element is the positioning context and
-     holds only the controls row, so top:100% lands exactly under it. Absolute,
-     never fixed - see _wirePicker. */
+  /* A tile has a fixed height, so the list overlays, anchored to .top. Absolute, never fixed. */
   :host([compact]) .top { position: relative; }
   :host([compact]) .menu {
     position: absolute;
@@ -1155,21 +1070,19 @@ class PriorityRow extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
-    // Default, always. Opening a dialog must never arm an override on its own -
-    // the row is inert until a level is deliberately picked.
+    // Opening a dialog must never arm an override.
     this._priority = 5;
     this._ttl = 0;
     this._array = null;
     this._built = false;
-    // True while a picker menu is open. Anything that rewrites the row holds
-    // off until it closes, so the menu is never realigned or torn out mid-tap.
+    // Nothing rewrites the row while a menu is open, so it is never torn out mid-tap.
     this._menuOpen = false;
   }
 
   connectedCallback() {
     this._build();
     this._fetch();
-    // Countdowns tick locally off expires_at; no polling needed for them.
+    // Countdowns tick locally off expires_at.
     if (!this._tick) {
       this._tick = window.setInterval(() => this._paintSlots(), 1000);
     }
@@ -1181,9 +1094,7 @@ class PriorityRow extends HTMLElement {
       this._tick = null;
     }
     this._menuOpen = false;
-    // A level chosen inside a dialog applies to what you do while looking at
-    // it. Leaving it armed would mean a toggle elsewhere later silently
-    // carried Manual Emergency.
+    // Left armed, a later toggle elsewhere would silently carry the level.
     const id = this._entityId();
     if (id) SELECTIONS.delete(id);
   }
@@ -1191,8 +1102,7 @@ class PriorityRow extends HTMLElement {
   set hass(hass) {
     const prev = this._hass;
     this._hass = hass;
-    // A new hass object arrives on every state change, so re-wrap each time
-    // rather than assuming one wrap lasts forever.
+    // A new hass object arrives on every state change.
     _wrapCallService(hass);
     this._build();
     // Slots 1-4 changing is announced by the overrides sensor; re-read then.
@@ -1239,7 +1149,7 @@ class PriorityRow extends HTMLElement {
     const id = this._entityId();
     if (!id) return;
     this._hass.callService("priority", "relinquish_all", { entity_id: id });
-    // Optimistic: the sensor change will refresh this properly a moment later.
+    // The sensor change refreshes it properly a moment later.
     window.setTimeout(() => this._fetch(), 400);
   }
 
@@ -1256,8 +1166,7 @@ class PriorityRow extends HTMLElement {
         service_data: { entity_id: id },
         return_response: true,
       });
-      // The websocket wrapper calls it `response`, the REST one
-      // `service_response`. Tolerate both rather than betting on one.
+      // Websocket calls it `response`, REST `service_response`.
       const payload =
         (res && (res.response || res.service_response)) || res || {};
       const arrays = payload.arrays;
@@ -1269,10 +1178,7 @@ class PriorityRow extends HTMLElement {
     }
   }
 
-  /* The DOM is built exactly once. Rebuilding it on every hass update - which
-   * arrives on every state change in the house - tore the <select> out from
-   * under the pointer and made the dropdowns impossible to use. Everything
-   * after this only rewrites text. */
+  // Built once: set hass fires on every state change, and a rebuild tears out open controls.
   _build() {
     if (this._built || !this._stateObj) return;
     const domain = (this._entityId() || "").split(".")[0];
@@ -1319,29 +1225,8 @@ class PriorityRow extends HTMLElement {
     this._paintStatus();
   }
 
-  /* The pickers are hand-rolled, and their options open inline rather than as
-   * a floating menu. Both decisions were forced.
-   *
-   * A native <select> opens an OS-level window in the Android companion app,
-   * which the WebView dismisses on any relayout - and this row rewrites its own
-   * countdowns once a second, so the picker collapsed the instant you used it.
-   * ha-select registers no items when built imperatively, so its menu listed
-   * the levels but none could be chosen and the field painted a raw "5".
-   *
-   * A position:fixed menu of our own then failed a third way: more-info renders
-   * as a floating dialog on a wide viewport, MDC animates that dialog on a
-   * transform, and a transformed ancestor makes position:fixed resolve against
-   * the ancestor instead of the viewport. Coordinates taken from
-   * getBoundingClientRect were then wrong by the dialog's offset and the menu
-   * landed off screen - while still reporting a perfectly healthy rect, which
-   * is why it looked fine to every check short of hit-testing a real pixel. It
-   * worked only when the viewport was narrow enough that HA switched to a
-   * full-screen sheet and the two origins happened to coincide.
-   *
-   * So there is no overlay. The options are an ordinary block that pushes the
-   * rest of the row down, and the dialog scrolls if it must. Nothing to
-   * position, nothing to clip, no stacking context to lose.
-   */
+  // Hand-rolled and inline: a native <select> collapses in the Android app, ha-select registers
+  // no items when built imperatively, and a fixed menu mislands in the transformed dialog.
   _wirePicker(id, items, apply) {
     const $ = (s) => this.shadowRoot.getElementById(s);
     const btn = $(id);
@@ -1352,7 +1237,7 @@ class PriorityRow extends HTMLElement {
       menu.hidden = true;
       if (btn.setAttribute) btn.setAttribute("aria-expanded", "false");
       this._menuOpen = false;
-      // Whatever the ticker held off on while this was open.
+      // Catch up on what the ticker skipped while open.
       this._paintStatus();
     };
     this._closers = this._closers || {};
@@ -1435,12 +1320,9 @@ class PriorityRow extends HTMLElement {
         this._array.effective_priority !== null &&
         this._array.effective_priority < 5;
       const wanted = held ? "yes" : "no";
-      // This sits beside the pickers, so adding or removing it shifts the
-      // button a menu was positioned against. Repainted on close.
+      // Adding it shifts the pickers, so wait until the menus close.
       if (!this._menuOpen && relWrap.dataset.held !== wanted) {
         relWrap.dataset.held = wanted;
-        // "Release" was a lie - it calls relinquish_all and clears every level
-        // at once, which matters now that each level can be released on its own.
         relWrap.innerHTML = held
           ? `<button id="rel" title="Clear every level above Default">Release all</button>`
           : "";
@@ -1462,11 +1344,7 @@ class PriorityRow extends HTMLElement {
     window.setTimeout(() => this._fetch(), 400);
   }
 
-  /* A signature of what the tree currently contains. The countdown ticks once a
-   * second, and rebuilding the list that often would put a button under the
-   * pointer that is destroyed a moment later - the same class of bug that made
-   * the dropdowns unusable. So the list is only rebuilt when its *contents*
-   * change; otherwise the ticker just rewrites the remaining-time text. */
+  // Rebuild only when contents change; a per-second rebuild would destroy a button mid-click.
   _slotsKey() {
     const slots = (this._array && this._array.slots) || {};
     const winner = this._array && this._array.effective_priority;
@@ -1493,13 +1371,9 @@ class PriorityRow extends HTMLElement {
     });
   }
 
-  /* The whole tree, not just the winner: seeing that Manual Emergency is
-   * holding ON for another 24 minutes while Automatic wants OFF underneath is
-   * the entire point of an array rather than a flag. */
   _paintSlots() {
     if (!this._built) return;
-    // The countdown rewrite runs once a second, forever. A stale "14m left" for
-    // a few seconds costs nothing next to a menu moving under a fingertip.
+    // A stale countdown costs nothing next to a menu moving under a fingertip.
     if (this._menuOpen) return;
     const el = this.shadowRoot.getElementById("slots");
     if (!el) return;
@@ -1527,9 +1401,7 @@ class PriorityRow extends HTMLElement {
              slot.expires_at ? ` data-exp="${_esc(slot.expires_at)}"` : ""
            }>${_remainingText(slot.expires_at)}</span>
            ${
-             // Default is not an override - there is nothing underneath for it
-             // to fall back to, so releasing it would change nothing and the
-             // button would be a lie.
+             // Default has nothing underneath to release to.
              p < 5
                ? `<button class="rel-one" data-rel-p="${p}" title="Release ${PRIORITY_LABELS[p]}">Release</button>`
                : `<span class="rel-spacer"></span>`
@@ -1554,18 +1426,13 @@ class PriorityRow extends HTMLElement {
 customElements.define("priority-row", PriorityRow);
 
 
-/* ===================================================================
- * Tile-card feature
- *
- * `window.customCardFeatures` is a supported extension point, so this renders
- * *inside the built-in tile card* rather than in a card of ours, and it should
- * survive frontend updates. One feature covers every arbitrated domain.
+/* ---- Tile-card feature: a supported extension point, and the fallback if more-info breaks.
  *
  *   type: tile
  *   entity: switch.pump
  *   features:
  *     - type: custom:priority-feature
- * =================================================================== */
+ */
 
 class PriorityTileFeature extends HTMLElement {
   static getStubConfig() {
@@ -1601,12 +1468,7 @@ class PriorityTileFeature extends HTMLElement {
     }
     if (!this._root) {
       this._root = this.attachShadow({ mode: "open" });
-      /* hui-card-features sizes its children to a single control row. This
-       * feature is taller than that by design (it shows the whole array), and
-       * without opting out the extra height was laid out as zero and painted
-       * outside the card. The parent's sizing rules are not !important, so an
-       * !important declaration here wins without needing to know their
-       * selectors. */
+      // The parent sizes features to one control row; !important opts out without its selectors.
       const style = document.createElement("style");
       style.textContent = `
         :host {
@@ -1641,22 +1503,7 @@ window.customCardFeatures.push({
 });
 
 
-/* ===================================================================
- * More-info injection
- *
- * The part with no supported API behind it.
- *
- * `ha-more-info-info` is the shared container that wraps every per-domain body
- * (`more-info-light`, `more-info-switch`, ...), so patching it once covers all
- * domains rather than needing a hook per domain.
- *
- * This reaches into compiled frontend internals and may stop working on any
- * Home Assistant update. It is therefore written to fail closed: every step is
- * guarded, and anything unexpected leaves the dialog exactly as it was rather
- * than half-rendered or broken. The worst realistic outcome is that the
- * priority row silently stops appearing - the tile-card feature above is the
- * supported fallback for exactly that day.
- * =================================================================== */
+/* ---- More-info injection: unsupported compiled internals, so every step fails closed ---- */
 
 function _injectPriorityRow(host) {
   if (!host || !host.shadowRoot) return;
@@ -1686,12 +1533,7 @@ function _injectPriorityRow(host) {
 
 function _patchMoreInfo() {
   if (!window.customElements || !customElements.whenDefined) return;
-  // ONE tag only. `ha-more-info-info` and `more-info-content` are nested, so
-  // patching both injected the row twice - once under the entity's controls
-  // and once again at the very bottom of the dialog. `more-info-content` is
-  // the inner host that swaps in the per-domain body, so appending to its
-  // shadow root puts the row directly beneath the controls it modifies, which
-  // is where it belongs.
+  // One tag only: more-info-content nests in ha-more-info-info, so patching both doubles the row.
   ["more-info-content"].forEach((tag) => {
     customElements
       .whenDefined(tag)
@@ -1718,8 +1560,7 @@ function _patchMoreInfo() {
 
 _patchMoreInfo();
 
-// Exposed so the node test harness can exercise the injection and the patch
-// directly. Nothing in the UI reads these.
+// For the node test harness; the UI never reads these.
 window.__priorityInternals = {
   injectPriorityRow: _injectPriorityRow,
   patchMoreInfo: _patchMoreInfo,

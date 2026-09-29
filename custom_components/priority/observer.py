@@ -1,18 +1,8 @@
-"""Out-of-band change detection.
+"""Record changes with no service call behind them (wall switch, vendor app, Zigbee binding).
 
-A wall switch, a vendor app, a Zigbee group binding or a physical relay can
-change a device with no Home Assistant service call behind it. Without this the
-array would quietly lie: it would claim a command is in force while the device
-sits somewhere else entirely.
-
-The rule chosen here is that an unexplained change is treated as a Default-level
-write. Touching a switch on the wall then means exactly what commanding at
-priority 5 means - it takes effect, and any automation is free to override it.
-
-Deliberately absent: any form of snap-back. When the array disagrees with
-reality we record reality; we never re-assert the array against somebody
-standing at a light switch. Enforcing the array would turn a marginal Zigbee
-link into a command loop, and would make the house argue with its occupants.
+An unexplained change is a Default-level write. There is deliberately no
+snap-back: the array records reality and is never re-asserted against someone
+at a switch, which on a marginal link would also become a command loop.
 """
 
 from __future__ import annotations
@@ -39,7 +29,7 @@ _IGNORED_STATES = frozenset({STATE_UNAVAILABLE, STATE_UNKNOWN})
 
 @callback
 def async_start_observer(hass: HomeAssistant, manager: PriorityManager):
-    """Watch for state changes we cannot account for. Returns an unsubscribe."""
+    """Returns an unsubscribe."""
 
     @callback
     def _handle(event: Event[EventStateChangedData]) -> None:
@@ -60,16 +50,8 @@ def async_start_observer(hass: HomeAssistant, manager: PriorityManager):
         if not manager.async_is_managed(entity_id):
             return
 
-        # An entity coming back from unavailable is a transport event, not a
-        # command, so it is never recorded as one.
-        #
-        # It may be worth re-driving, but only when a real override is being
-        # held. At the Default level the array is just a record of ordinary
-        # last-wins traffic, and re-sending that would be a command nobody
-        # issued - stock Home Assistant does nothing when a device returns, and
-        # so must we. On a marginal Zigbee link an entity can flap repeatedly;
-        # re-driving on every recovery would turn that into a stream of
-        # commands, and for a lock or a valve that is a genuinely bad idea.
+        # Returning from unavailable is transport, not a command. Re-drive only a real
+        # override: re-sending Default would turn a flapping link into a command stream.
         if old_state is not None and old_state.state in _IGNORED_STATES:
             if new_state.state not in _IGNORED_STATES:
                 array = manager.async_peek_array(entity_id)
@@ -84,8 +66,7 @@ def async_start_observer(hass: HomeAssistant, manager: PriorityManager):
         if new_state.state in _IGNORED_STATES:
             return
 
-        # Attribute changes without an on/off transition are usually the device
-        # reporting, not somebody commanding it.
+        # An attribute-only change is the device reporting, not somebody commanding it.
         if old_state is not None and old_state.state == new_state.state:
             return
 

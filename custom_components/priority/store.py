@@ -1,14 +1,8 @@
-"""Runtime state for priority arbitration.
+"""Runtime state: arrays, the managed set, and the one path that drives devices.
 
-Holds one :class:`PriorityArray` per managed entity, decides which entities are
-managed, remembers which contexts originated from a dispatch of ours, and owns
-the one path that actually drives a device.
-
-Dispatch deliberately does **not** go through ``hass.services.async_call``. We
-keep a reference to the original :class:`homeassistant.core.Service` that was
-registered before we wrapped it, and invoke its job directly. That makes
-recursion structurally impossible rather than something a guard flag has to
-catch, and it means one relinquish produces exactly one dispatch.
+Dispatch invokes the captured pre-wrap ``Service`` job rather than
+``hass.services.async_call``, so recursion is structurally impossible and one
+relinquish produces exactly one dispatch.
 """
 
 from __future__ import annotations
@@ -64,8 +58,7 @@ _LOGGER = logging.getLogger(__name__)
 
 SAVE_DELAY = 10
 
-# Fields we strip from a call payload before it becomes a slot. These are
-# targeting and control fields, not commanded values.
+# Targeting and control fields, not commanded values; never stored in a slot.
 _NON_COMMAND_FIELDS = frozenset(
     {
         ATTR_ENTITY_ID,
@@ -84,93 +77,71 @@ class PriorityManager:
     """Owns every priority array and the single path that drives devices."""
 
     def __init__(self, hass: HomeAssistant, options: dict[str, Any]) -> None:
-        """Initialise the manager."""
         self.hass = hass
         self._options = dict(options)
         self._arrays: dict[str, PriorityArray] = {}
         self._store: Store[dict[str, Any]] = Store(
             hass, STORAGE_VERSION, STORAGE_KEY
         )
-        # Original Service objects, keyed by (domain, service), captured before
-        # we replaced them in the registry.
         self._originals: dict[tuple[str, str], Service] = {}
-        # Frontend service descriptions as they were before we grafted the
-        # priority fields on, so unload can put them back.
+        # Pre-patch frontend descriptions, put back on unload.
         self._descriptions: dict[tuple[str, str], dict[str, Any]] = {}
-        # context id -> priority, for out-of-band attribution. Bounded and TTL'd
-        # so a long-running instance cannot grow it without limit.
+        # context id -> (priority, monotonic stamp); bounded and TTL'd.
         self._our_contexts: OrderedDict[str, tuple[int, float]] = OrderedDict()
         self._listeners: list[Callable[[str], None]] = []
-        # Entities currently held above Default. Kept incrementally so the hot
-        # path never has to scan every array to answer "did anything change".
+        # Maintained incrementally so the hot path never scans every array.
         self._override_set: frozenset[str] = frozenset()
-        # user id -> display name, so attribution can be resolved from a
-        # @callback. hass.auth.async_get_user is a coroutine and the write path
-        # is synchronous, so the names are cached rather than looked up.
+        # Cached because auth lookups are coroutines and the write path is a @callback.
         self._user_names: dict[str, str] = {}
         self._user_refresh_pending = False
         self._managed_cache: frozenset[str] | None = None
-        # (entity_id, priority) -> cancel callable for a pending slot expiry.
         self._timers: dict[tuple[str, int], Callable[[], None]] = {}
-        # Re-registering a service fires EVENT_SERVICE_REGISTERED synchronously,
-        # which our own listener would otherwise treat as a new service to wrap.
-        # During unwrapping that would immediately undo the unwrap.
+        # async_register fires EVENT_SERVICE_REGISTERED synchronously, so unwrapping re-wraps.
         self._suspended = False
 
     @property
     def suspended(self) -> bool:
-        """Whether service wrapping is currently suppressed."""
         return self._suspended
 
     @callback
     def async_suspend(self, suspended: bool) -> None:
-        """Suppress or resume service wrapping."""
         self._suspended = suspended
 
-    # ------------------------------------------------------------------
-    # Options and the managed set
-    # ------------------------------------------------------------------
+    # ---- Options and the managed set ----
 
     @property
     def options(self) -> dict[str, Any]:
-        """Current config entry options."""
         return self._options
 
     @callback
     def async_update_options(self, options: dict[str, Any]) -> None:
-        """Apply new options and drop the managed-set cache."""
         self._options = dict(options)
         self._managed_cache = None
 
     @property
     def track_out_of_band(self) -> bool:
-        """Whether unexplained state changes are recorded into the lowest slot."""
         return self._options.get(
             CONF_TRACK_OUT_OF_BAND, DEFAULT_TRACK_OUT_OF_BAND
         )
 
     @callback
     def async_invalidate_managed_cache(self) -> None:
-        """Recompute the managed set on next use (registry changed)."""
         self._managed_cache = None
 
     @property
     def scope(self) -> str:
-        """Whether arbitration covers every entity or an explicit selection."""
         return self._options.get(CONF_SCOPE, DEFAULT_SCOPE)
 
     @callback
     def _excluded(self) -> frozenset[str]:
-        """Entities the user has carved out of arbitration."""
         return frozenset(self._options.get(CONF_EXCLUDED_ENTITIES) or [])
 
     @callback
     def async_is_managed(self, entity_id: str) -> bool:
-        """Whether this entity is under priority arbitration.
+        """Whether this entity is under arbitration.
 
-        This is the hot predicate - it runs for every target of every
-        arbitrated service call - so the ``all`` case is answered from a domain
-        lookup and a set membership test, without touching any registry.
+        Runs for every target of every arbitrated call, so ``all`` scope never
+        touches a registry.
         """
         if entity_id.split(".", 1)[0] not in ARBITRATED_SERVICES:
             return False
@@ -182,7 +153,6 @@ class PriorityManager:
 
     @callback
     def _selected_entities(self) -> frozenset[str]:
-        """Resolve the explicit selection from entities, labels and areas."""
         if self._managed_cache is not None:
             return self._managed_cache
 
@@ -215,11 +185,7 @@ class PriorityManager:
 
     @callback
     def async_managed_entities(self) -> frozenset[str]:
-        """Every currently-known managed entity.
-
-        Only for seeding and diagnostics. The hot path uses
-        :meth:`async_is_managed` instead, which never has to enumerate.
-        """
+        """Every managed entity; enumerates, so never call it on the hot path."""
         if self.scope == SCOPE_ALL:
             excluded = self._excluded()
             return frozenset(
@@ -233,25 +199,17 @@ class PriorityManager:
 
     @callback
     def async_managed_domains(self) -> frozenset[str]:
-        """Domains that should have their services wrapped.
-
-        Under ``all`` scope this is every arbitrated domain that is actually
-        loaded, so a service is never wrapped for a domain the user does not
-        have.
-        """
+        """Domains whose services should be wrapped."""
         if self.scope == SCOPE_ALL:
             return frozenset(ARBITRATED_SERVICES)
         return frozenset(
             entity_id.split(".", 1)[0] for entity_id in self._selected_entities()
         )
 
-    # ------------------------------------------------------------------
-    # Arrays
-    # ------------------------------------------------------------------
+    # ---- Arrays ----
 
     @callback
     def async_get_array(self, entity_id: str) -> PriorityArray:
-        """Return the array for an entity, creating it if needed."""
         if (array := self._arrays.get(entity_id)) is None:
             array = PriorityArray(entity_id=entity_id)
             self._arrays[entity_id] = array
@@ -259,17 +217,13 @@ class PriorityManager:
 
     @callback
     def async_peek_array(self, entity_id: str) -> PriorityArray | None:
-        """Return the array for an entity without creating one."""
         return self._arrays.get(entity_id)
 
     @callback
     def async_all_arrays(self) -> dict[str, PriorityArray]:
-        """Every array currently held."""
         return dict(self._arrays)
 
-    # ------------------------------------------------------------------
-    # Change notification, for the diagnostic entities
-    # ------------------------------------------------------------------
+    # ---- Change notification ----
 
     @callback
     def async_add_listener(self, listener: Callable[[str], None]) -> Callable[[], None]:
@@ -284,21 +238,15 @@ class PriorityManager:
 
     @callback
     def async_overridden(self) -> frozenset[str]:
-        """Entities currently held by something above the Default level."""
+        """Entities currently held above Default."""
         return self._override_set
 
     @callback
     def async_notify(self, entity_id: str) -> None:
-        """Record that an array changed, and fan out only if it matters.
+        """Record an array change, fanning out only when an override starts or ends.
 
-        Every arbitrated command lands here, so this is the hottest path in the
-        integration. With every entity in scope, notifying unconditionally
-        would push a diagnostic state write - and a recorder row - for every
-        light toggle in the house, to report a number that had not changed.
-
-        Only overrides are interesting. Ordinary Default-level traffic updates
-        the array silently: nothing persists it (slot 5 is not stored) and
-        nothing displays it.
+        Every arbitrated command lands here; notifying on Default traffic would
+        cost a sensor write and a recorder row per light toggle in the house.
         """
         array = self._arrays.get(entity_id)
         held = array.effective_priority() if array is not None else None
@@ -317,13 +265,10 @@ class PriorityManager:
             listener(entity_id)
         self._store.async_delay_save(self._data_to_save, SAVE_DELAY)
 
-    # ------------------------------------------------------------------
-    # Context attribution
-    # ------------------------------------------------------------------
+    # ---- Context attribution ----
 
     @callback
     def async_remember_context(self, context: Context, priority: int) -> None:
-        """Record that a context originated from one of our dispatches."""
         now = time.monotonic()
         self._our_contexts[context.id] = (priority, now)
         self._our_contexts.move_to_end(context.id)
@@ -339,7 +284,6 @@ class PriorityManager:
         return bool(context.parent_id) and context.parent_id in self._our_contexts
 
     def _prune_contexts(self, now: float) -> None:
-        """Drop expired and surplus context ids, oldest first."""
         while self._our_contexts:
             oldest_id = next(iter(self._our_contexts))
             _, stamp = self._our_contexts[oldest_id]
@@ -353,13 +297,10 @@ class PriorityManager:
 
     @callback
     def async_default_priority(self, context: Context) -> int:
-        """Infer a priority for a call that did not specify one.
+        """Priority for a call that named none: a ``user_id`` means a person.
 
-        A human acting through the UI, the app or voice arrives with a
-        ``user_id``; anything else is taken to be an automation or script.
-        Both defaults are configurable because this heuristic will be wrong for
-        somebody - a REST call from a script the user considers "manual", for
-        instance.
+        Both defaults are configurable because the heuristic misreads some
+        callers, such as a REST script the user considers manual.
         """
         if context.user_id:
             return int(
@@ -372,7 +313,6 @@ class PriorityManager:
         )
 
     async def async_refresh_user_names(self) -> None:
-        """Cache user id -> display name for attribution."""
         self._user_refresh_pending = False
         try:
             users = await self.hass.auth.async_get_users()
@@ -385,7 +325,6 @@ class PriorityManager:
 
     @callback
     def _async_schedule_user_refresh(self) -> None:
-        """Re-read the user list once, after an id we do not know about."""
         if self._user_refresh_pending:
             return
         self._user_refresh_pending = True
@@ -395,16 +334,12 @@ class PriorityManager:
     def async_attribute(self, context: Context) -> str | None:
         """Best-effort human-readable attribution for a slot write."""
         if context.user_id:
-            # Fall back to the raw id rather than dropping the attribution: a
-            # user created since the last refresh should still be traceable,
-            # and the refresh means the next write resolves properly.
             if (name := self._user_names.get(context.user_id)) is not None:
                 return f"user:{name}"
+            # Unknown user: keep the raw id traceable and refresh for next time.
             self._async_schedule_user_refresh()
             return f"user:{context.user_id}"
-        # Automations and scripts stamp their own state with the context they
-        # then use for their actions, so a bounded scan of those two domains
-        # finds the originator without pulling in the logbook machinery.
+        # Automations and scripts stamp their own state with the context they act under.
         wanted = {context.id}
         if context.parent_id:
             wanted.add(context.parent_id)
@@ -414,51 +349,39 @@ class PriorityManager:
                     return state.entity_id
         return None
 
-    # ------------------------------------------------------------------
-    # Original service handlers
-    # ------------------------------------------------------------------
+    # ---- Original service handlers ----
 
     @callback
     def async_store_original(
         self, domain: str, service: str, original: Service
     ) -> None:
-        """Remember the handler that was registered before we wrapped it."""
         self._originals[(domain, service)] = original
 
     @callback
     def async_get_original(self, domain: str, service: str) -> Service | None:
-        """Return the pre-wrap handler for a service."""
         return self._originals.get((domain, service))
 
     @callback
     def async_forget_original(self, domain: str, service: str) -> Service | None:
-        """Drop and return the pre-wrap handler for a service."""
         return self._originals.pop((domain, service), None)
 
     @callback
     def async_originals(self) -> dict[tuple[str, str], Service]:
-        """Every captured pre-wrap handler."""
         return dict(self._originals)
 
-    # ------------------------------------------------------------------
-    # Original frontend descriptions
-    # ------------------------------------------------------------------
+    # ---- Original frontend descriptions ----
 
     @callback
     def async_store_description(
         self, domain: str, service: str, description: dict[str, Any]
     ) -> None:
-        """Remember a service description as it was before we patched it."""
         self._descriptions[(domain, service)] = description
 
     @callback
     def async_descriptions(self) -> dict[tuple[str, str], dict[str, Any]]:
-        """Every captured pre-patch description."""
         return dict(self._descriptions)
 
-    # ------------------------------------------------------------------
-    # Logbook
-    # ------------------------------------------------------------------
+    # ---- Logbook ----
 
     @callback
     def async_logbook(
@@ -466,15 +389,8 @@ class PriorityManager:
     ) -> None:
         """Write an entry into the affected entity's own logbook.
 
-        This is what makes an override visible where people actually look for
-        it - the history and logbook tabs of the device's more-info dialog -
-        rather than only in a diagnostic sensor they have to know about.
-
-        Fires the documented ``logbook_entry`` event directly rather than
-        importing ``logbook.async_log_entry``, which is only a thin wrapper
-        around the same event. That keeps logbook off the dependency list
-        entirely: if it is not loaded the event simply goes unheard, and there
-        is no import to guard or fail.
+        Fires ``logbook_entry`` directly instead of importing logbook, so it is
+        not a dependency; if logbook is not loaded the event goes unheard.
         """
         self.hass.bus.async_fire(
             EVENT_LOGBOOK_ENTRY,
@@ -487,9 +403,7 @@ class PriorityManager:
             context=context,
         )
 
-    # ------------------------------------------------------------------
-    # Slot construction
-    # ------------------------------------------------------------------
+    # ---- Slot construction ----
 
     @callback
     def async_resolve_service(
@@ -506,11 +420,8 @@ class PriorityManager:
     ) -> None:
         """Raise if this payload could never be dispatched.
 
-        A slot is written before anything is driven, and it wins arbitration
-        whether or not the dispatch succeeds. So an undispatchable command does
-        not fail loudly - it takes control and holds it, with nothing driving
-        the device and every level below it dead. Validating up front turns
-        that silent black hole into an error the caller sees.
+        A slot wins arbitration whether or not its dispatch succeeds, so an
+        undispatchable one would hold the device with nothing driving it.
         """
         original = self.async_get_original(domain, service)
         schema = original.schema if original is not None else None
@@ -533,7 +444,6 @@ class PriorityManager:
         context: Context,
         ttl: float | None = None,
     ) -> Slot:
-        """Build a slot from a call payload, with an optional lease."""
         expires_at = None
         if ttl:
             expires_at = dt_util.utcnow() + timedelta(seconds=float(ttl))
@@ -550,9 +460,7 @@ class PriorityManager:
             expires_at=expires_at,
         )
 
-    # ------------------------------------------------------------------
-    # Expiry timers
-    # ------------------------------------------------------------------
+    # ---- Expiry timers ----
 
     @callback
     def async_write_slot(
@@ -565,7 +473,6 @@ class PriorityManager:
 
     @callback
     def async_cancel_timer(self, entity_id: str, priority: int) -> None:
-        """Cancel a pending expiry for one slot."""
         if (cancel := self._timers.pop((entity_id, priority), None)) is not None:
             cancel()
 
@@ -626,14 +533,11 @@ class PriorityManager:
 
     @callback
     def async_shutdown_timers(self) -> None:
-        """Cancel every pending expiry."""
         for cancel in self._timers.values():
             cancel()
         self._timers.clear()
 
-    # ------------------------------------------------------------------
-    # Dispatch - the only place a device is actually driven
-    # ------------------------------------------------------------------
+    # ---- Dispatch: the only place a device is actually driven ----
 
     async def async_dispatch(
         self,
@@ -644,20 +548,14 @@ class PriorityManager:
         priority: int,
         context: Context | None = None,
     ) -> None:
-        """Drive entities by invoking the pre-wrap handler directly.
-
-        Bypassing ``hass.services.async_call`` is what makes recursion
-        impossible: our wrapper is never re-entered, so a replay cannot be
-        mistaken for a fresh command.
-        """
+        """Drive entities through the pre-wrap handler, never re-entering our wrapper."""
         targets = list(entity_ids)
         if not targets:
             return
 
         original = self.async_get_original(domain, service)
         if original is None:
-            # Nothing wrapped this service, so the plain call path is correct
-            # and cannot recurse into us.
+            # Not wrapped, so the plain call path cannot recurse into us.
             await self.hass.services.async_call(
                 domain,
                 service,
@@ -684,10 +582,7 @@ class PriorityManager:
                     targets,
                     priority,
                 )
-                # Belt and braces behind async_validate_command. A slot that
-                # cannot be dispatched must not keep winning arbitration:
-                # it would sit there driving nothing while everything below it
-                # stayed suppressed. Give control back instead.
+                # Backstop for async_validate_command: give control back.
                 for entity_id in targets:
                     array = self.async_peek_array(entity_id)
                     if array is None or array.get(priority) is None:
@@ -712,12 +607,7 @@ class PriorityManager:
     async def async_drive_effective(
         self, entity_id: str, context: Context | None = None
     ) -> None:
-        """Re-issue whatever command currently wins for an entity.
-
-        Called after a relinquish. If the array is now empty the device is left
-        exactly as it is - relinquishing everything means "stop arbitrating",
-        not "turn off".
-        """
+        """Re-issue the winning command; an empty array leaves the device alone."""
         array = self.async_peek_array(entity_id)
         if array is None or (winner := array.effective()) is None:
             return
@@ -726,14 +616,10 @@ class PriorityManager:
             slot.domain, slot.service, [entity_id], slot.data, priority, context
         )
 
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
+    # ---- Persistence ----
 
     async def async_load(self) -> None:
-        """Restore persisted slots."""
-        # Before the early return below: attribution needs these regardless of
-        # whether there is anything persisted to restore.
+        # Attribution needs user names even when nothing is persisted.
         await self.async_refresh_user_names()
         if (raw := await self._store.async_load()) is None:
             return
@@ -742,12 +628,7 @@ class PriorityManager:
             if not array.is_empty():
                 self._arrays[entity_id] = array
 
-        # The override set is a derived index, maintained incrementally by
-        # async_notify to keep the hot path off a full scan. Restoring arrays
-        # bypasses that path entirely, so it has to be rebuilt here or every
-        # restored hold is invisible: the sensor under-reports, and anything
-        # that asks "what is currently overridden" gets an empty answer until
-        # the next command happens to touch that entity.
+        # Restoring bypasses async_notify, so rebuild the index here.
         self._override_set = frozenset(
             entity_id
             for entity_id, array in self._arrays.items()
@@ -762,7 +643,6 @@ class PriorityManager:
 
     @callback
     def _data_to_save(self) -> dict[str, Any]:
-        """Build the storage payload, skipping arrays with nothing to persist."""
         arrays: dict[str, Any] = {}
         for entity_id, array in self._arrays.items():
             stored = array.to_storage()
@@ -771,15 +651,6 @@ class PriorityManager:
         return {"arrays": arrays}
 
     async def async_save(self) -> None:
-        """Flush pending state to disk now."""
         await self._store.async_save(self._data_to_save())
 
-    # Deliberately absent: seeding slot 5 from live state at startup.
-    #
-    # It was tempting - an entity switched at the wall while Home Assistant was
-    # down otherwise shows an empty array while visibly being on. But a seeded
-    # slot is a command nobody issued, and it is not inert: `relinquish_all`
-    # would re-drive it, so releasing an override could switch a device to
-    # whatever it happened to be doing when Home Assistant last started. A
-    # cosmetic gap in the array is much cheaper than a phantom command. Slot 5
-    # is written only by a real manual call or an observed out-of-band change.
+    # No startup seed of slot 5: relinquish_all would re-drive a command nobody issued.

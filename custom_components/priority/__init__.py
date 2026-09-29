@@ -1,8 +1,6 @@
 """Priority command arbitration for Home Assistant.
 
-Gives every command a level of authority, so a manual action and an automation
-can disagree without one silently clobbering the other. Modelled on the BACnet
-priority array (ASHRAE 135), trimmed from sixteen levels to five:
+A BACnet-style priority array (ASHRAE 135) trimmed to five levels:
 
     1  Manual Emergency
     2  Automatic Emergency
@@ -10,26 +8,10 @@ priority array (ASHRAE 135), trimmed from sixteen levels to five:
     4  Automatic
     5  Default             <- everything, unless the caller says otherwise
 
-The lowest-numbered occupied slot drives the device. Clearing a slot hands
-control back to the next one down, re-issuing that command as it stands right
-now rather than restoring a stale snapshot - which is the failure mode every
-hand-rolled capture-and-restore automation eventually hits.
-
-Everything defaults to level 5, and writes at the same level simply replace
-each other. So a house that never mentions priority behaves exactly like stock
-Home Assistant: last command wins, and a person can always countermand an
-automation through the UI.
-
-That default matters more than it looks. Splitting the defaults - automations
-at 4, people at 5 - is the faithful BACnet reading, but it is wrong here: Home
-Assistant automations fire and forget, with no relinquish idiom, so slot 4
-would fill up and never drain, and every entity an automation had ever touched
-would go deaf to the app. Arbitration has to be something you opt into per
-command, not something that accumulates behind your back.
-
-Opt-in therefore holds at two levels: no config entry means nothing is wrapped
-at all, and with one loaded nothing changes until a call actually asks for a
-priority above 5.
+The lowest-numbered occupied slot drives the device, and clearing one re-issues
+the next as it stands now rather than restoring a snapshot. Same-level writes
+replace each other, so until a call names a level the house behaves exactly
+like stock Home Assistant.
 """
 
 from __future__ import annotations
@@ -69,48 +51,30 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 _CARD_URL = "/priority_static/priority-card.js"
 _FRONTEND_REGISTERED = "priority_frontend_registered"
-# Tracked apart from the module URL: a static path cannot be unregistered, so it
-# is registered once for the lifetime of the process, while the module URL is
-# added and removed on every setup and unload.
+# A static path cannot be unregistered, so it outlives the module URL across reloads.
 _STATIC_REGISTERED = "priority_static_registered"
 
 
 def _card_path() -> pathlib.Path:
-    """Absolute path of the card JS on disk."""
     return pathlib.Path(__file__).parent / "frontend" / "priority-card.js"
 
 
 def _card_fingerprint() -> str:
-    """Short content hash of the card, for cache-busting its URL.
-
-    The static path is served with a month-long max-age, and the browser has no
-    other reason to re-fetch a URL it has already seen. Without a fingerprint an
-    updated card reaches nobody until that expires - a frontend fix could sit
-    invisible for thirty-one days while the integration reported itself updated.
-
-    Hashing the content rather than the manifest version means the URL changes
-    exactly when the file does, which also makes it work while developing
-    against a running instance. Blocking I/O: call it in an executor.
-    """
+    """Content hash for the card URL; the static path is cached for 31 days. Blocking I/O."""
     try:
         return hashlib.sha256(_card_path().read_bytes()).hexdigest()[:12]
     except OSError:
-        # A missing or unreadable card is handled by the caller; degrade to an
-        # unversioned URL rather than failing registration over a hash.
         return "0"
 
 type PriorityConfigEntry = ConfigEntry[PriorityManager]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: PriorityConfigEntry) -> bool:
-    """Set up priority arbitration from a config entry."""
     manager = PriorityManager(hass, dict(entry.options))
     await manager.async_load()
     entry.runtime_data = manager
 
-    # Services registered by integrations that set up after us are wrapped when
-    # the registry announces them. Without this, anything loading later than
-    # this entry would escape arbitration entirely.
+    # Integrations that load after us would otherwise escape arbitration.
     @callback
     def _on_service_registered(event: Event) -> None:
         domain = event.data[ATTR_DOMAIN]
@@ -148,15 +112,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: PriorityConfigEntry) -> 
     async_wrap_all(hass, manager)
     async_register_services(hass, manager)
 
-    # Make the fields real in the frontend. Without this the feature is
-    # YAML-only: the schema accepts priority, but no form ever offers it.
+    # Without this the fields are YAML-only; no form offers them.
     await async_patch_descriptions(hass, manager)
     await _async_register_frontend(hass)
     entry.async_on_unload(async_start_observer(hass, manager))
-    # Levels 1-3 (and now 4) come back from storage, but nothing re-drives them:
-    # while running, the array is never re-asserted against reality. A restart
-    # is the one gap in that rule, since a change during downtime was observed
-    # by nobody. Emergency levels only - see reconcile.py.
     entry.async_on_unload(async_schedule_startup_reconcile(hass, manager))
     entry.async_on_unload(entry.add_update_listener(_async_update_options))
     entry.async_on_unload(manager.async_shutdown_timers)
@@ -174,19 +133,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: PriorityConfigEntry) -> 
 
 
 async def _async_register_frontend(hass: HomeAssistant) -> None:
-    """Serve the override card and load it into the frontend automatically.
-
-    Registering the JS as an extra frontend module rather than a Lovelace
-    resource means there is no manual "add resource" step - the card is simply
-    available in the card picker once the integration is set up.
-    """
+    """Serve the cards as an extra frontend module, so no Lovelace resource step is needed."""
     if hass.data.get(_FRONTEND_REGISTERED):
         return
-    # Arbitration must not depend on the frontend being present. A headless
-    # instance, or a test rig without the compiled frontend package, still gets
-    # a fully working integration - it just has no card.
-    # `hass.http` is present but None on a rig without the http component, so
-    # hasattr is not enough - it let registration through to fail on None.
+    # Arbitration must work headless; hass.http exists but is None without the http component.
     if "frontend" not in hass.config.components or getattr(hass, "http", None) is None:
         _LOGGER.debug("Priority: no frontend available, skipping card registration")
         return
@@ -194,10 +144,7 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         from homeassistant.components.frontend import add_extra_js_url
         from homeassistant.components.http import StaticPathConfig
 
-        # Registering the same path twice raises, and a reload would then lose
-        # the card entirely: unload removes the module URL, and the failure
-        # here would stop it ever being added back, leaving no card on any page
-        # until a full restart.
+        # Registering the same path twice raises, which would lose the card after a reload.
         if not hass.data.get(_STATIC_REGISTERED):
             await hass.http.async_register_static_paths(
                 [StaticPathConfig(_CARD_URL, str(_card_path()), True)]
@@ -206,8 +153,7 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         fingerprint = await hass.async_add_executor_job(_card_fingerprint)
         card_url = f"{_CARD_URL}?v={fingerprint}"
         add_extra_js_url(hass, card_url)
-        # The versioned URL, not just a flag: unregistering has to remove the
-        # exact string that was added or it silently does nothing.
+        # Unregistering needs the exact string that was added.
         hass.data[_FRONTEND_REGISTERED] = card_url
         _LOGGER.info("Priority registered its dashboard card at %s", card_url)
     except Exception:
@@ -216,13 +162,7 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
 
 @callback
 def _async_unregister_frontend(hass: HomeAssistant) -> None:
-    """Stop serving the card when the integration is removed.
-
-    The static path cannot be unregistered, but the module URL can. Without
-    this, removing the integration left the card JS loading on every frontend
-    page until the next restart - and the flag stayed set, so a re-add in the
-    same session skipped registration entirely.
-    """
+    """Drop the module URL on unload; the static path cannot be unregistered."""
     card_url = hass.data.pop(_FRONTEND_REGISTERED, None)
     if not card_url:
         return
@@ -237,7 +177,6 @@ def _async_unregister_frontend(hass: HomeAssistant) -> None:
 async def _async_update_options(
     hass: HomeAssistant, entry: PriorityConfigEntry
 ) -> None:
-    """Re-apply options, wrapping or unwrapping services as scope changes."""
     manager = entry.runtime_data
     manager.async_update_options(dict(entry.options))
 
