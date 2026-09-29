@@ -44,13 +44,13 @@
       "fields": {
         "priority": {
           "name": "Priority",
-          "description": "The slot to clear, 1 (Manual Emergency) to 5 (Manual Low)."
+          "description": "The slot to clear, 1 (Manual Emergency) to 5 (Default)."
         }
       }
     },
     "relinquish_all": {
       "name": "Relinquish all",
-      "description": "Clear every slot above Manual Low, returning the entity to ordinary control."
+      "description": "Clear every slot above Default, returning the entity to ordinary control."
     },
     "set": {
       "name": "Set slot",
@@ -58,7 +58,7 @@
       "fields": {
         "priority": {
           "name": "Priority",
-          "description": "The slot to write, 1 (Manual Emergency) to 5 (Manual Low)."
+          "description": "The slot to write, 1 (Manual Emergency) to 5 (Default)."
         },
         "service": {
           "name": "Service",

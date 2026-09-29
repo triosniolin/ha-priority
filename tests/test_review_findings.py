@@ -5,11 +5,11 @@ Each of these was verified to fail against the code as it stood before the fix.
 
 from __future__ import annotations
 
-import pytest
-import voluptuous as vol
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pathlib import Path
 
+import pytest
 from homeassistant.exceptions import ServiceValidationError
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.priority.const import (
     CONF_EXCLUDED_ENTITIES,
@@ -182,3 +182,14 @@ async def test_errors_name_a_level_that_actually_exists(demo_hass) -> None:
 
     assert PRIORITY_NAMES[MAX_PRIORITY] in str(err.value)
     assert "Manual Low" not in str(err.value)
+
+
+def test_service_descriptions_name_a_level_that_actually_exists() -> None:
+    """strings.json still said "Manual Low" after the error was fixed."""
+    strings = (
+        Path(__file__).parent.parent
+        / "custom_components" / "priority" / "strings.json"
+    ).read_text()
+
+    assert "Manual Low" not in strings
+    assert f"5 ({PRIORITY_NAMES[MAX_PRIORITY]})" in strings
