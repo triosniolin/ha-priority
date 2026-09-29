@@ -5,7 +5,7 @@
   "codeowners": ["@triosniolin"],
   "config_flow": true,
   "documentation": "https://github.com/triosniolin/ha-priority",
-  "integration_type": "system",
+  "integration_type": "service",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/triosniolin/ha-priority/issues",
   "version": "0.1.6"

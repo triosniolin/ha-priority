@@ -187,3 +187,20 @@ async def test_area_selection_includes_entities_that_follow_their_device(
         "light", "turn_on", {"entity_id": LIGHT, "priority": PRI_MANUAL}, blocking=True
     )
     assert (await _slot(demo_hass, LIGHT, PRI_MANUAL))["service"] == "turn_on"
+
+
+def test_the_integration_is_offered_in_the_add_integration_list() -> None:
+    """Core leaves "system" and "entity" custom integrations out of the picker entirely."""
+    import json
+    from pathlib import Path
+
+    manifest = json.loads(
+        (
+            Path(__file__).parent.parent
+            / "custom_components"
+            / "priority"
+            / "manifest.json"
+        ).read_text()
+    )
+    assert manifest["integration_type"] not in ("system", "entity")
+
