@@ -7,6 +7,7 @@ from datetime import timedelta
 from typing import Any
 
 import voluptuous as vol
+from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import (
     HomeAssistant,
     ServiceCall,
@@ -67,13 +68,32 @@ def _targets(hass: HomeAssistant, call: ServiceCall) -> list[str]:
     return sorted(selected.referenced | selected.indirectly_referenced)
 
 
+@callback
+def _with_members(hass: HomeAssistant, entity_ids: list[str]) -> list[str]:
+    """Expand groups to members, group first so each member is driven once on release."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    pending = list(entity_ids)
+    while pending:
+        entity_id = pending.pop(0)
+        if entity_id in seen:
+            continue
+        seen.add(entity_id)
+        ordered.append(entity_id)
+        state = hass.states.get(entity_id)
+        members = state.attributes.get(ATTR_ENTITY_ID) if state is not None else None
+        if isinstance(members, (list, tuple)):
+            pending.extend(m for m in members if isinstance(m, str))
+    return ordered
+
+
 def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> None:
     """Register the priority domain services."""
 
     async def _relinquish(call: ServiceCall) -> None:
         """Clear one slot and hand control to whatever wins next."""
         priority = call.data[ATTR_PRIORITY]
-        for entity_id in _targets(hass, call):
+        for entity_id in _with_members(hass, _targets(hass, call)):
             array = manager.async_peek_array(entity_id)
             if array is None:
                 continue
@@ -95,13 +115,12 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
                     call.context,
                 )
             if was_in_control:
-                # Exactly one dispatch: async_drive_effective invokes the
-                # captured original handler, never the wrapper.
+                # Drives the captured original, never the wrapper: exactly one dispatch.
                 await manager.async_drive_effective(entity_id, call.context)
 
     async def _relinquish_all(call: ServiceCall) -> None:
         """Clear every slot above Default and re-drive what is left."""
-        for entity_id in _targets(hass, call):
+        for entity_id in _with_members(hass, _targets(hass, call)):
             array = manager.async_peek_array(entity_id)
             if array is None:
                 continue
@@ -138,10 +157,7 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
 
         targets = _targets(hass, call)
 
-        # Validate every target before writing any slot. Raising part-way
-        # through the loop below left the entities already processed holding
-        # new slots while the caller saw only an error, which is the worst of
-        # both outcomes.
+        # Validate all before writing any, or a mid-loop raise leaves earlier slots written.
         for entity_id in targets:
             if not manager.async_is_managed(entity_id):
                 raise ServiceValidationError(
@@ -152,11 +168,6 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
                 raise ServiceValidationError(
                     f"{domain}.{service} is not an arbitrated service"
                 )
-            # And validate the payload, because a slot that cannot be
-            # dispatched still wins arbitration - it would hold control
-            # indefinitely with nothing driving the device, and everything
-            # below it dead. A typo'd field here used to create exactly that
-            # black hole, silently.
             manager.async_validate_command(domain, service, entity_id, data)
 
         for entity_id in targets:
@@ -164,15 +175,18 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
             resolved = manager.async_resolve_service(domain, service, entity_id)
             array = manager.async_get_array(entity_id)
             takes_control = array.wins(priority)
-            manager.async_write_slot(
-                entity_id,
-                priority,
-                manager.async_make_slot(domain, resolved, data, call.context, ttl),
-            )
+            slot = manager.async_make_slot(domain, resolved, data, call.context, ttl)
+            manager.async_write_slot(entity_id, priority, slot)
             manager.async_notify(entity_id)
             if takes_control:
                 await manager.async_dispatch(
-                    domain, resolved, [entity_id], data, priority, call.context
+                    domain,
+                    resolved,
+                    [entity_id],
+                    data,
+                    priority,
+                    call.context,
+                    slot.expires_at,
                 )
 
     async def _get(call: ServiceCall) -> ServiceResponse:

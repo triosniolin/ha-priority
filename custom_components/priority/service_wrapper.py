@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import voluptuous as vol
@@ -18,6 +18,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, call
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import target as target_helpers
+from homeassistant.util import dt as dt_util
 
 from .const import (
     ARBITRATED_SERVICES,
@@ -27,7 +28,7 @@ from .const import (
     MIN_PRIORITY,
     PRIORITY_NAMES,
 )
-from .store import PriorityManager
+from .store import PriorityManager, async_inherited, async_run_original
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -100,12 +101,7 @@ def _extend_schema(schema: Any) -> Any:
 
 @callback
 def _resolve_targets(hass: HomeAssistant, call: ServiceCall) -> list[str]:
-    """Resolve a call's targets to entity ids, including ``all``, which must never bypass a hold.
-
-    Returns the whole domain for ``all``, not the managed set: the caller forwards
-    the unmanaged remainder. Resolution errors propagate, because passing an
-    unresolvable call through would silently defeat a hold.
-    """
+    """Entity ids; ``all`` is the whole domain and errors propagate, so no hold is bypassed."""
     entity_id = call.data.get(ATTR_ENTITY_ID)
 
     if entity_id == ENTITY_MATCH_NONE:
@@ -137,7 +133,10 @@ def _build_wrapper(
 
         raw: dict[str, Any] = dict(call.data.get(_RAW_KEY) or call.data)
 
-        async def _passthrough(entity_ids: list[str] | None = None) -> ServiceResponse:
+        async def _passthrough(
+            entity_ids: list[str] | None = None,
+            command: tuple[int, datetime | None] | None = None,
+        ) -> ServiceResponse:
             if entity_ids is None:
                 # Strip our fields: core passes leftovers as kwargs, and fan.set_percentage raises.
                 data = {
@@ -166,6 +165,11 @@ def _build_wrapper(
             forwarded = ServiceCall(
                 hass, domain, service, data, call.context, call.return_response
             )
+            if command is not None:
+                # An excluded group still hands the command on to managed members.
+                return await async_run_original(
+                    hass, original.job, forwarded, *command
+                )
             task = hass.async_run_hass_job(original.job, forwarded)
             return await task if task is not None else None
 
@@ -182,17 +186,25 @@ def _build_wrapper(
             entity_id for entity_id in targets if entity_id not in managed_set
         ]
 
-        if not managed:
-            return await _passthrough()
-
         # Suppressing a response-returning call would hand back a wrong answer.
         if call.return_response:
             return await _passthrough()
 
-        priority = call.data.get(ATTR_PRIORITY) or manager.async_default_priority(
-            call.context
-        )
         ttl = _ttl_seconds(call.data.get(ATTR_PRIORITY_TTL))
+        expires_at = dt_util.utcnow() + timedelta(seconds=ttl) if ttl else None
+        if ATTR_PRIORITY in call.data:
+            priority = call.data[ATTR_PRIORITY]
+        elif (inherited := async_inherited(call.context)) is not None:
+            # A group forwarding to its members, from inside our dispatch of the group.
+            priority, inherited_expiry = inherited
+            if expires_at is None:
+                expires_at = inherited_expiry
+        else:
+            priority = manager.async_default_priority(call.context)
+
+        if not managed:
+            return await _passthrough(command=(priority, expires_at))
+
         if ttl is not None and priority == MAX_PRIORITY:
             raise ServiceValidationError(
                 f"priority_ttl is not valid at priority {MAX_PRIORITY} "
@@ -210,15 +222,18 @@ def _build_wrapper(
             manager.async_write_slot(
                 entity_id,
                 priority,
-                manager.async_make_slot(domain, resolved, raw, call.context, ttl),
+                manager.async_make_slot(
+                    domain, resolved, raw, call.context, expires_at=expires_at
+                ),
             )
             manager.async_notify(entity_id)
             if takes_control:
                 winners[resolved].append(entity_id)
                 if priority < MAX_PRIORITY and previous != priority:
-                    lease = (
-                        f" for {timedelta(seconds=int(ttl))}" if ttl else ""
-                    )
+                    lease = ""
+                    if expires_at:
+                        remaining = (expires_at - dt_util.utcnow()).total_seconds()
+                        lease = f" for {timedelta(seconds=round(remaining))}"
                     manager.async_logbook(
                         entity_id,
                         f"held at {PRIORITY_NAMES[priority]} "
@@ -237,14 +252,20 @@ def _build_wrapper(
                 )
 
         if unmanaged:
-            await _passthrough(unmanaged)
+            await _passthrough(unmanaged, (priority, expires_at))
 
         command_data = {
             key: value for key, value in raw.items() if key not in _TARGET_FIELDS
         }
         for resolved, entity_ids in winners.items():
             await manager.async_dispatch(
-                domain, resolved, entity_ids, command_data, priority, call.context
+                domain,
+                resolved,
+                entity_ids,
+                command_data,
+                priority,
+                call.context,
+                expires_at,
             )
         return None
 

@@ -11,12 +11,20 @@ import logging
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
-from datetime import timedelta
+from contextvars import ContextVar
+from datetime import datetime, timedelta
 from typing import Any
 
 import voluptuous as vol
 from homeassistant.const import ATTR_ENTITY_ID, EVENT_LOGBOOK_ENTRY, SERVICE_TOGGLE
-from homeassistant.core import Context, HomeAssistant, Service, ServiceCall, callback
+from homeassistant.core import (
+    Context,
+    HassJob,
+    HomeAssistant,
+    Service,
+    ServiceCall,
+    callback,
+)
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -57,6 +65,38 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 SAVE_DELAY = 10
+
+# (context id, priority, expires_at) of the command being driven, inherited by a group's member call
+# (issue #2). Not the context map: a script reuses one context for every step.
+_DRIVING: ContextVar[tuple[str, int, datetime | None] | None] = ContextVar(
+    "priority_driving", default=None
+)
+
+
+@callback
+def async_inherited(context: Context) -> tuple[int, datetime | None] | None:
+    """Priority and lease for a call made from inside one of our dispatches."""
+    driving = _DRIVING.get()
+    if driving is None or driving[0] != context.id:
+        return None
+    return driving[1], driving[2]
+
+
+async def async_run_original(
+    hass: HomeAssistant,
+    job: HassJob,
+    call: ServiceCall,
+    priority: int,
+    expires_at: datetime | None,
+) -> Any:
+    """Run a pre-wrap handler so anything it calls on the same context inherits the command."""
+    token = _DRIVING.set((call.context.id, priority, expires_at))
+    try:
+        # Tasks copy the current contextvars when created, so the set must span this call.
+        task = hass.async_run_hass_job(job, call)
+    finally:
+        _DRIVING.reset(token)
+    return await task if task is not None else None
 
 # Targeting and control fields, not commanded values; never stored in a slot.
 _NON_COMMAND_FIELDS = frozenset(
@@ -138,11 +178,7 @@ class PriorityManager:
 
     @callback
     def async_is_managed(self, entity_id: str) -> bool:
-        """Whether this entity is under arbitration.
-
-        Runs for every target of every arbitrated call, so ``all`` scope never
-        touches a registry.
-        """
+        """Whether this entity is under arbitration; hot path, so never touches a registry."""
         if entity_id.split(".", 1)[0] not in ARBITRATED_SERVICES:
             return False
         if entity_id in self._excluded():
@@ -243,11 +279,7 @@ class PriorityManager:
 
     @callback
     def async_notify(self, entity_id: str) -> None:
-        """Record an array change, fanning out only when an override starts or ends.
-
-        Every arbitrated command lands here; notifying on Default traffic would
-        cost a sensor write and a recorder row per light toggle in the house.
-        """
+        """Fan out only when an override starts or ends; Default traffic floods the recorder."""
         array = self._arrays.get(entity_id)
         held = array.effective_priority() if array is not None else None
         overridden = held is not None and held < PRI_DEFAULT
@@ -297,11 +329,7 @@ class PriorityManager:
 
     @callback
     def async_default_priority(self, context: Context) -> int:
-        """Priority for a call that named none: a ``user_id`` means a person.
-
-        Both defaults are configurable because the heuristic misreads some
-        callers, such as a REST script the user considers manual.
-        """
+        """Priority for a call that named none; a ``user_id`` means a person (REST can misread)."""
         if context.user_id:
             return int(
                 self._options.get(CONF_DEFAULT_USER_PRIORITY, DEFAULT_USER_PRIORITY)
@@ -387,11 +415,7 @@ class PriorityManager:
     def async_logbook(
         self, entity_id: str, message: str, context: Context | None = None
     ) -> None:
-        """Write an entry into the affected entity's own logbook.
-
-        Fires ``logbook_entry`` directly instead of importing logbook, so it is
-        not a dependency; if logbook is not loaded the event goes unheard.
-        """
+        """Fire ``logbook_entry`` directly so logbook is not a dependency."""
         self.hass.bus.async_fire(
             EVENT_LOGBOOK_ENTRY,
             {
@@ -418,11 +442,7 @@ class PriorityManager:
     def async_validate_command(
         self, domain: str, service: str, entity_id: str, data: dict[str, Any]
     ) -> None:
-        """Raise if this payload could never be dispatched.
-
-        A slot wins arbitration whether or not its dispatch succeeds, so an
-        undispatchable one would hold the device with nothing driving it.
-        """
+        """Raise if undispatchable: such a slot would still win and hold the device dead."""
         original = self.async_get_original(domain, service)
         schema = original.schema if original is not None else None
         if schema is None:
@@ -443,8 +463,8 @@ class PriorityManager:
         data: dict[str, Any],
         context: Context,
         ttl: float | None = None,
+        expires_at: datetime | None = None,
     ) -> Slot:
-        expires_at = None
         if ttl:
             expires_at = dt_util.utcnow() + timedelta(seconds=float(ttl))
         return Slot(
@@ -547,6 +567,7 @@ class PriorityManager:
         data: dict[str, Any],
         priority: int,
         context: Context | None = None,
+        expires_at: datetime | None = None,
     ) -> None:
         """Drive entities through the pre-wrap handler, never re-entering our wrapper."""
         targets = list(entity_ids)
@@ -600,9 +621,9 @@ class PriorityManager:
             "Priority %s dispatching %s.%s to %s", priority, domain, service, targets
         )
 
-        task = self.hass.async_run_hass_job(original.job, service_call)
-        if task is not None:
-            await task
+        await async_run_original(
+            self.hass, original.job, service_call, priority, expires_at
+        )
 
     async def async_drive_effective(
         self, entity_id: str, context: Context | None = None
@@ -613,7 +634,13 @@ class PriorityManager:
             return
         priority, slot = winner
         await self.async_dispatch(
-            slot.domain, slot.service, [entity_id], slot.data, priority, context
+            slot.domain,
+            slot.service,
+            [entity_id],
+            slot.data,
+            priority,
+            context,
+            slot.expires_at,
         )
 
     # ---- Persistence ----
