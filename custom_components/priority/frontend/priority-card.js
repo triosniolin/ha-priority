@@ -1149,6 +1149,14 @@ class PriorityRow extends HTMLElement {
     const id = this._entityId();
     if (!id) return;
     this._hass.callService("priority", "relinquish_all", { entity_id: id });
+    // Disarm too, or the next tap writes a fresh override straight back.
+    this._priority = 5;
+    this._ttl = 0;
+    this._select(this._priority, this._ttl);
+    this._closeMenus();
+    this._paintPickerLabel("p", this._prioItems);
+    this._paintPickerLabel("t", this._ttlItems);
+    this._paintStatus();
     // The sensor change refreshes it properly a moment later.
     window.setTimeout(() => this._fetch(), 400);
   }

@@ -496,6 +496,33 @@ calls.length = 0;
 r._release();
 ok(calls[0].s === "relinquish_all", "and it really does call relinquish_all");
 
+console.log("\n-- Release all disarms the row (#3) --");
+r._array = { effective_priority: 3, slots: tree.slots };
+r._priority = 3;
+r._ttl = 3600;
+r._select(3, 3600);
+const RSEL = window.__priorityInternals.selections;
+ok(RSEL.has("light.living_room"), "armed at Manual before the release");
+r._release();
+ok(r._priority === 5 && r._ttl === 0, "Release all resets the pickers to Default, no lease");
+ok(
+  !RSEL.has("light.living_room"),
+  "and drops the selection, so the next toggle is a plain Default call"
+);
+ok(
+  r.shadowRoot.getElementById("p-label").textContent === "Default",
+  "the priority picker reads Default afterwards"
+);
+ok(r.shadowRoot.getElementById("t").disabled === true, "and the duration picker is disabled again");
+calls.length = 0;
+const afterRel = { states: {}, callService: (d, s, data) => calls.push({ d, s, data }) };
+window.__priorityInternals.wrapCallService(afterRel);
+afterRel.callService("light", "turn_off", { entity_id: "light.living_room" });
+ok(
+  calls.length === 1 && calls[0].data.priority === undefined,
+  "a toggle straight after Release all carries no priority"
+);
+
 const htmlBefore = r.shadowRoot.getElementById("slots").innerHTML;
 r._paintSlots();
 r._paintSlots();

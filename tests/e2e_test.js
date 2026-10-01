@@ -307,6 +307,25 @@ const pick = (id) => `#${id}`;
   await page.click(pick("p"));
   ok(!(await page.isVisible(pick("p-menu"))), "and a second click closes it");
 
+  console.log("\n-- Release all puts the picker back to Default --");
+  await makeRow(page);
+  await page.click(pick("p"));
+  await page.click('.opt[data-v="3"]');
+  ok(
+    (await page.textContent(pick("p-label"))).trim() === "Manual",
+    "armed at Manual first"
+  );
+  await page.click("#rel");
+  ok(
+    (await page.evaluate("window.__calls.map((c) => c.s)")).includes("relinquish_all"),
+    "the click calls relinquish_all"
+  );
+  ok(
+    (await page.textContent(pick("p-label"))).trim() === "Default",
+    "and the picker reads Default again"
+  );
+  ok(await page.isDisabled(pick("t")), "with the duration picker disabled");
+
   console.log("\n-- control card pickers --");
   // The control card renders into light DOM inside a masonry column, so it has
   // its own set of ways to go wrong, and its own inline pickers.
