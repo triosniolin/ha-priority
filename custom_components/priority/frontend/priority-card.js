@@ -6,17 +6,43 @@ const PRIORITY_COLORS = {
   2: "var(--warning-color, #ffa600)",
   3: "var(--info-color, #039be5)",
   4: "var(--success-color, #43a047)",
-  5: "var(--secondary-text-color)",
+  5: "var(--purple-color, #926bc7)",
+  6: "var(--teal-color, #009688)",
+  7: "var(--blue-grey-color, #607d8b)",
+  8: "var(--secondary-text-color)",
 };
 
-// Must track PRIORITY_NAMES in const.py.
-const PRIORITY_LABELS = {
-  1: "Manual Emergency",
-  2: "Automatic Emergency",
-  3: "Manual",
-  4: "Automatic",
-  5: "Default",
-};
+// Names are the user's, published by the overrides sensor; this stands in until it is read.
+let LEVELS = _makeLevels(null);
+
+function _makeLevels(raw) {
+  const list = raw
+    ? Object.keys(raw)
+        .map(Number)
+        .filter((p) => Number.isInteger(p) && p > 0)
+        .sort((a, b) => a - b)
+    : [];
+  if (!list.length) {
+    for (let p = 1; p <= 8; p++) list.push(p);
+  }
+  const max = list[list.length - 1];
+  const names = {};
+  list.forEach((p) => {
+    names[p] = raw && raw[String(p)] ? String(raw[String(p)]) : p === max ? "Default" : `Level ${p}`;
+  });
+  return { list, names, max, sig: JSON.stringify(names) };
+}
+
+// The highest level is Default, so callers ask for it here rather than naming a number.
+function _levels(hass) {
+  const st = hass && hass.states && hass.states["sensor.active_overrides"];
+  const raw = st && st.attributes && st.attributes.priority_levels;
+  if (raw && typeof raw === "object") {
+    const next = _makeLevels(raw);
+    if (next.sig !== LEVELS.sig) LEVELS = next;
+  }
+  return LEVELS;
+}
 
 // Entity names and states come from devices and discovery, so never trust them as markup.
 function _esc(value) {
@@ -185,7 +211,9 @@ class PriorityOverridesCard extends HTMLElement {
 
     if (!ids.length) {
       this._body.innerHTML =
-        '<div class="empty">Nothing is overridden. Everything is running at Default.</div>';
+        `<div class="empty">Nothing is overridden. Everything is running at ${_esc(
+          _levels(this._hass).names[LEVELS.max]
+        )}.</div>`;
       this._footer.innerHTML = "";
       return;
     }
@@ -315,6 +343,7 @@ class PriorityControlCard extends HTMLElement {
       ...config,
     };
     this._priority = Number(this._config.default_priority) || 3;
+    this._levelsSig = null;
     this._ttl = Number(this._config.default_ttl) || 0;
     this._root = null;
   }
@@ -325,6 +354,7 @@ class PriorityControlCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    _levels(hass);
     this._render();
   }
 
@@ -353,7 +383,7 @@ class PriorityControlCard extends HTMLElement {
       priority: this._priority,
     };
     // The integration rejects a lease at Default.
-    if (this._ttl > 0 && this._priority < 5) {
+    if (this._ttl > 0 && this._priority < LEVELS.max) {
       data.priority_ttl = this._ttl;
     }
     this._hass.callService(domain, which === "on" ? acts.on : acts.off, data);
@@ -490,6 +520,10 @@ class PriorityControlCard extends HTMLElement {
       this._root.appendChild(this._note);
       this._root.appendChild(this._rows);
       this.appendChild(this._root);
+    }
+    // Rebuilt only on a rename, which is rare enough to close an open list.
+    if (this._levelsSig !== LEVELS.sig) {
+      this._levelsSig = LEVELS.sig;
       this._renderControls();
     }
     this._renderRows();
@@ -503,7 +537,7 @@ class PriorityControlCard extends HTMLElement {
         ([v, text]) =>
           `<button type="button" class="opt${
             v === current ? " sel" : ""
-          }" role="option" aria-selected="${v === current}" data-v="${v}">${text}</button>`
+          }" role="option" aria-selected="${v === current}" data-v="${v}">${_esc(text)}</button>`
       )
       .join("");
     return `
@@ -511,9 +545,9 @@ class PriorityControlCard extends HTMLElement {
         <label>${label}</label>
         <button type="button" class="pick" data-pick="${key}"
                 aria-haspopup="listbox" aria-expanded="false">
-          <span class="pick-label" data-label="${key}">${
+          <span class="pick-label" data-label="${key}">${_esc(
             hit ? hit[1] : current
-          }</span>
+          )}</span>
           <span class="caret" aria-hidden="true">&#9662;</span>
         </button>
         <div class="menu" data-menu="${key}" role="listbox" hidden>${opts}</div>
@@ -521,7 +555,7 @@ class PriorityControlCard extends HTMLElement {
   }
 
   _renderControls() {
-    this._prioItems = [1, 2, 3, 4, 5].map((p) => [p, `${p} - ${PRIORITY_LABELS[p]}`]);
+    this._prioItems = LEVELS.list.map((p) => [p, `${p} - ${LEVELS.names[p]}`]);
     this._ttlItems = TTL_PRESETS.map((t) => [t.value, t.label]);
 
     this._controls.innerHTML = `
@@ -617,11 +651,11 @@ class PriorityControlCard extends HTMLElement {
     const overrides = this._overridesSensor();
 
     this._note.textContent =
-      this._priority === 5
-        ? "Default: behaves exactly as a normal command. The last one wins."
+      this._priority === LEVELS.max
+        ? `${LEVELS.names[LEVELS.max]}: behaves exactly as a normal command. The last one wins.`
         : this._ttl > 0
-        ? `Commands take hold at ${PRIORITY_LABELS[this._priority]} and release themselves automatically.`
-        : `Commands take hold at ${PRIORITY_LABELS[this._priority]} until released.`;
+        ? `Commands take hold at ${LEVELS.names[this._priority]} and release themselves automatically.`
+        : `Commands take hold at ${LEVELS.names[this._priority]} until released.`;
 
     this._rows.innerHTML = (this._config.entities || [])
       .map((id) => {
@@ -633,7 +667,7 @@ class PriorityControlCard extends HTMLElement {
         const held = overrides[id];
         const badge = held
           ? `<span class="held" style="background:${
-              PRIORITY_COLORS[held.priority]
+              PRIORITY_COLORS[held.priority] || "var(--primary-color)"
             }">${_esc(held.priority_name)}</span>`
           : "";
         return `
@@ -780,7 +814,7 @@ function _wrapCallService(hass) {
           o && o.priority === sel.priority && o.ttl === sel.ttl;
         if (sel && ids.every((id) => same(SELECTIONS.get(id)))) {
           data = { ...(data || {}), priority: sel.priority };
-          if (sel.ttl > 0 && sel.priority < 5) data.priority_ttl = sel.ttl;
+          if (sel.ttl > 0 && sel.priority < LEVELS.max) data.priority_ttl = sel.ttl;
         }
       }
     } catch (err) {
@@ -804,7 +838,7 @@ function _pickerMarkup(id, title, items, current) {
     <div class="picker">
       <button type="button" class="pick" id="${id}" title="${title}"
               aria-haspopup="listbox" aria-expanded="false" aria-controls="${id}-menu">
-        <span class="pick-label" id="${id}-label">${hit ? hit[1] : current}</span>
+        <span class="pick-label" id="${id}-label">${_esc(hit ? hit[1] : current)}</span>
         <span class="caret" aria-hidden="true">&#9662;</span>
       </button>
     </div>`;
@@ -816,7 +850,7 @@ function _menuMarkup(id, items, current) {
       ([v, label]) =>
         `<button type="button" class="opt${
           v === current ? " sel" : ""
-        }" role="option" aria-selected="${v === current}" data-v="${v}">${label}</button>`
+        }" role="option" aria-selected="${v === current}" data-v="${v}">${_esc(label)}</button>`
     )
     .join("");
   return `<div class="menu" id="${id}-menu" role="listbox" hidden>${opts}</div>`;
@@ -832,12 +866,20 @@ const ROW_STYLE = `
     flex-wrap: wrap;
     padding: 8px 0 4px;
   }
+  .status {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 6px;
+  }
   .hint {
     text-align: center;
     font-size: 0.75rem;
     color: var(--secondary-text-color);
-    padding-bottom: 6px;
+    min-width: 0;
   }
+  .tile-rel[hidden] { display: none; }
   select:disabled { opacity: 0.5; }
   .picker { display: inline-flex; }
   .pick {
@@ -968,34 +1010,17 @@ const ROW_STYLE = `
 
   /* Compact (tile feature): fixed widths overflow a half column, so only the level name flexes. */
   :host([compact]) .wrap { padding: 4px 0 2px; gap: 6px; }
-  :host([compact]) .slots { font-size: 0.72rem; padding: 2px 0 4px; }
-  :host([compact]) .slot { gap: 6px; padding: 2px 6px; }
-  :host([compact]) .lvl {
-    flex: 1 1 auto;
-    min-width: 0;
+  /* A tile gets one grid row per feature and no way to ask for more, so it shows one status line. */
+  :host([compact]) .slots,
+  :host([compact]) #rel-wrap { display: none; }
+  /* Sized to the Release button, so the row is one height whether or not it shows. */
+  :host([compact]) .status { padding-bottom: 2px; min-height: 20px; }
+  :host([compact]) .tile-rel { padding: 1px 6px; font-size: 0.68rem; line-height: 1.3; }
+  :host([compact]) .hint {
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  :host([compact]) .act { flex: 0 0 auto; }
-  :host([compact]) .rem { min-width: 0; }
-  /* Subgrid re-aligns columns; guarded, since without it each slot collapses to one column. */
-  @supports (grid-template-columns: subgrid) {
-    :host([compact]) .slots {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto auto auto;
-      column-gap: 6px;
-      row-gap: 2px;
-    }
-    :host([compact]) .slot {
-      display: grid;
-      grid-template-columns: subgrid;
-      grid-column: 1 / -1;
-      align-items: baseline;
-    }
-  }
-  /* Nothing to line up with once the columns are elastic. */
-  :host([compact]) .rel-spacer { display: none; }
-  :host([compact]) .rel-one { padding: 2px 6px; font-size: 0.68rem; }
   :host([compact]) select { font-size: 0.8rem; padding: 4px 6px; }
   /* Zero basis: at ~230px tile width a 120px basis wrapped and overflowed the tile. */
   :host([compact]) .picker { flex: 1 1 0; min-width: 0; }
@@ -1066,12 +1091,41 @@ function _remainingText(expiresAt) {
   return `${s}s left`;
 }
 
+// Follows slots and shadow hosts: HA's dialog scrolls inside its own shadow root.
+function _scrollParent(el) {
+  let n = el;
+  while (n) {
+    n = n.assignedSlot || n.parentNode || n.host;
+    if (!n || n === document) break;
+    if (n.nodeType === 1 && n.scrollHeight > n.clientHeight) {
+      const oy = getComputedStyle(n).overflowY;
+      if (oy === "auto" || oy === "scroll") return n;
+    }
+  }
+  return document.scrollingElement || null;
+}
+
+// To the very end, so the list's bottom edge shows it is the end; never past the button.
+function _revealToEnd(row, btn, menu) {
+  try {
+    const box = _scrollParent(row);
+    if (!box || !box.scrollTo) return;
+    const boxTop = box === document.scrollingElement ? 0 : box.getBoundingClientRect().top;
+    const end = box.scrollHeight - box.clientHeight;
+    const buttonAtTop = box.scrollTop + (btn.getBoundingClientRect().top - boxTop) - 8;
+    const target = Math.max(box.scrollTop, Math.min(end, buttonAtTop));
+    if (target > box.scrollTop) box.scrollTo({ top: target, behavior: "smooth" });
+  } catch (err) {
+    if (menu.scrollIntoView) menu.scrollIntoView({ block: "nearest" });
+  }
+}
+
 class PriorityRow extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
     // Opening a dialog must never arm an override.
-    this._priority = 5;
+    this._priority = LEVELS.max;
     this._ttl = 0;
     this._array = null;
     this._built = false;
@@ -1095,8 +1149,7 @@ class PriorityRow extends HTMLElement {
     }
     this._menuOpen = false;
     // Left armed, a later toggle elsewhere would silently carry the level.
-    const id = this._entityId();
-    if (id) SELECTIONS.delete(id);
+    this._disarm();
   }
 
   set hass(hass) {
@@ -1104,8 +1157,16 @@ class PriorityRow extends HTMLElement {
     this._hass = hass;
     // A new hass object arrives on every state change.
     _wrapCallService(hass);
+    const prevMax = LEVELS.max;
+    _levels(hass);
+    if (LEVELS.max !== prevMax && this._priority === prevMax) this._priority = LEVELS.max;
+    // A rename relabels the pickers; wait for a closed menu so none is torn out mid-tap.
+    if (this._built && this._builtSig !== LEVELS.sig && !this._menuOpen) {
+      this._built = false;
+      this._slotsRendered = null;
+    }
     this._build();
-    // Slots 1-4 changing is announced by the overrides sensor; re-read then.
+    // Override levels changing is announced by the overrides sensor; re-read then.
     const sensor = hass && hass.states["sensor.active_overrides"];
     const prevSensor = prev && prev.states["sensor.active_overrides"];
     if (sensor !== prevSensor) this._fetch();
@@ -1122,6 +1183,10 @@ class PriorityRow extends HTMLElement {
       this._stateObj.entity_id !== stateObj.entity_id;
     this._stateObj = stateObj;
     if (changed) {
+      // A level armed for one entity must not follow the row to another.
+      this._priority = LEVELS.max;
+      this._ttl = 0;
+      this._select(this._priority, this._ttl);
       this._array = null;
       this._built = false;
       this.shadowRoot.innerHTML = "";
@@ -1138,11 +1203,41 @@ class PriorityRow extends HTMLElement {
     return this._stateObj && this._stateObj.entity_id;
   }
 
+  // A group's dialog shows its members' own toggles, and those calls target the members.
+  _members(id) {
+    const out = [];
+    const pending = [id];
+    while (pending.length) {
+      const st = this._hass && this._hass.states && this._hass.states[pending.shift()];
+      const members = st && st.attributes && st.attributes.entity_id;
+      if (!Array.isArray(members)) continue;
+      members.forEach((m) => {
+        if (typeof m === "string" && m !== id && !out.includes(m)) {
+          out.push(m);
+          pending.push(m);
+        }
+      });
+    }
+    return out;
+  }
+
   _select(priority, ttl) {
+    this._disarm();
     const id = this._entityId();
-    if (!id) return;
-    if (priority >= 5) SELECTIONS.delete(id);
-    else SELECTIONS.set(id, { priority, ttl });
+    if (!id || priority >= LEVELS.max) return;
+    const sel = { priority, ttl };
+    this._armed = [id, ...this._members(id)];
+    this._armedSel = sel;
+    this._armed.forEach((i) => SELECTIONS.set(i, sel));
+  }
+
+  // Only entries this row set; another row may have armed a member for itself since.
+  _disarm() {
+    (this._armed || []).forEach((i) => {
+      if (SELECTIONS.get(i) === this._armedSel) SELECTIONS.delete(i);
+    });
+    this._armed = [];
+    this._armedSel = null;
   }
 
   _release() {
@@ -1150,7 +1245,7 @@ class PriorityRow extends HTMLElement {
     if (!id) return;
     this._hass.callService("priority", "relinquish_all", { entity_id: id });
     // Disarm too, or the next tap writes a fresh override straight back.
-    this._priority = 5;
+    this._priority = LEVELS.max;
     this._ttl = 0;
     this._select(this._priority, this._ttl);
     this._closeMenus();
@@ -1195,7 +1290,8 @@ class PriorityRow extends HTMLElement {
       return;
     }
 
-    this._prioItems = [1, 2, 3, 4, 5].map((p) => [p, PRIORITY_LABELS[p]]);
+    this._prioItems = LEVELS.list.map((p) => [p, LEVELS.names[p]]);
+    this._builtSig = LEVELS.sig;
     this._ttlItems = TTL_PRESETS.map((t) => [t.value, t.label]);
 
     this.shadowRoot.innerHTML = `
@@ -1219,7 +1315,10 @@ class PriorityRow extends HTMLElement {
         ${_menuMarkup("p", this._prioItems, this._priority)}
         ${_menuMarkup("t", this._ttlItems, this._ttl)}
       </div>
-      <div class="hint" id="hint"></div>
+      <div class="status">
+        <span class="hint" id="hint"></span>
+        <button class="rel-one tile-rel" id="tile-rel" hidden>Release</button>
+      </div>
       <div class="slots" id="slots"></div>`;
 
     this._wirePicker("p", () => this._prioItems, (v) => {
@@ -1260,6 +1359,9 @@ class PriorityRow extends HTMLElement {
       menu.hidden = false;
       if (btn.setAttribute) btn.setAttribute("aria-expanded", "true");
       this._menuOpen = true;
+      // Inline in more-info, so a row near the fold would open its list out of sight.
+      const compact = this.hasAttribute && this.hasAttribute("compact");
+      if (!compact) _revealToEnd(this, btn, menu);
     };
 
     btn.onclick = () => (menu.hidden === false ? close() : open());
@@ -1307,15 +1409,15 @@ class PriorityRow extends HTMLElement {
   _paintStatus() {
     if (!this._built) return;
     const $ = (s) => this.shadowRoot.getElementById(s);
-    const armed = this._priority < 5;
+    const armed = this._priority < LEVELS.max;
 
     const t = $("t");
     if (t) t.disabled = !armed;
 
     const hint = $("hint");
-    if (hint) {
+    if (hint && !this._compact()) {
       hint.textContent = armed
-        ? `Controls above will command at ${PRIORITY_LABELS[this._priority]}${
+        ? `Controls above will command at ${LEVELS.names[this._priority]}${
             this._ttl > 0 ? "" : ", until released"
           }.`
         : "Normal behaviour. The last command wins.";
@@ -1326,13 +1428,13 @@ class PriorityRow extends HTMLElement {
       const held =
         this._array &&
         this._array.effective_priority !== null &&
-        this._array.effective_priority < 5;
+        this._array.effective_priority < LEVELS.max;
       const wanted = held ? "yes" : "no";
       // Adding it shifts the pickers, so wait until the menus close.
       if (!this._menuOpen && relWrap.dataset.held !== wanted) {
         relWrap.dataset.held = wanted;
         relWrap.innerHTML = held
-          ? `<button id="rel" title="Clear every level above Default">Release all</button>`
+          ? `<button id="rel" title="Clear every level above ${_esc(LEVELS.names[LEVELS.max])}">Release all</button>`
           : "";
         const rel = $("rel");
         if (rel) rel.onclick = () => this._release();
@@ -1340,6 +1442,41 @@ class PriorityRow extends HTMLElement {
     }
 
     this._paintSlots();
+  }
+
+  _compact() {
+    return !!(this.hasAttribute && this.hasAttribute("compact"));
+  }
+
+  // Arming feedback first, since it describes the next tap; then whatever holds the entity.
+  _paintTileStatus() {
+    const $ = (s) => this.shadowRoot.getElementById(s);
+    const hint = $("hint");
+    const rel = $("tile-rel");
+    if (!hint || !rel) return;
+    const winner = this._array && this._array.effective_priority;
+    const held = winner !== null && winner !== undefined && winner < LEVELS.max;
+    let text;
+    if (this._priority < LEVELS.max) {
+      text = `Controls above will command at ${LEVELS.names[this._priority]}${
+        this._ttl > 0 ? "" : ", until released"
+      }.`;
+    } else if (held) {
+      const slot = (this._array.slots || {})[String(winner)];
+      const left = slot ? _remainingText(slot.expires_at) : "";
+      text = `${LEVELS.names[winner]} · ${left || "held"}`;
+    } else {
+      text = "Normal behaviour. The last command wins.";
+    }
+    hint.textContent = text;
+    const showRel = held && !(this._priority < LEVELS.max);
+    rel.hidden = !showRel;
+    rel.dataset.p = showRel ? String(winner) : "";
+    rel.title = showRel ? `Release ${LEVELS.names[winner]}` : "";
+    rel.onclick = () => {
+      const p = Number(rel.dataset.p);
+      if (p) this._releaseOne(p);
+    };
   }
 
   _releaseOne(priority) {
@@ -1357,7 +1494,7 @@ class PriorityRow extends HTMLElement {
     const slots = (this._array && this._array.slots) || {};
     const winner = this._array && this._array.effective_priority;
     return (
-      [1, 2, 3, 4, 5]
+      LEVELS.list
         .map((p) => {
           const s = slots[String(p)];
           return s
@@ -1366,7 +1503,7 @@ class PriorityRow extends HTMLElement {
               }`
             : "";
         })
-        .join("|") + "#" + winner
+        .join("|") + "#" + winner + "#" + LEVELS.sig
     );
   }
 
@@ -1383,6 +1520,10 @@ class PriorityRow extends HTMLElement {
     if (!this._built) return;
     // A stale countdown costs nothing next to a menu moving under a fingertip.
     if (this._menuOpen) return;
+    if (this._compact()) {
+      this._paintTileStatus();
+      return;
+    }
     const el = this.shadowRoot.getElementById("slots");
     if (!el) return;
 
@@ -1396,22 +1537,22 @@ class PriorityRow extends HTMLElement {
     const slots = (this._array && this._array.slots) || {};
     const winner = this._array && this._array.effective_priority;
     const rows = [];
-    for (let p = 1; p <= 5; p++) {
+    for (const p of LEVELS.list) {
       const slot = slots[String(p)];
       if (!slot) continue;
       rows.push(
         `<div class="slot${p === winner ? " win" : ""}">
-           <span class="lvl" style="color:${PRIORITY_COLORS[p]}">${
-          PRIORITY_LABELS[p]
-        }</span>
+           <span class="lvl" style="color:${PRIORITY_COLORS[p] || "var(--primary-color)"}">${_esc(
+          LEVELS.names[p]
+        )}</span>
            <span class="act">${_esc(_serviceLabel(slot))}</span>
            <span class="rem"${
              slot.expires_at ? ` data-exp="${_esc(slot.expires_at)}"` : ""
            }>${_remainingText(slot.expires_at)}</span>
            ${
              // Default has nothing underneath to release to.
-             p < 5
-               ? `<button class="rel-one" data-rel-p="${p}" title="Release ${PRIORITY_LABELS[p]}">Release</button>`
+             p < LEVELS.max
+               ? `<button class="rel-one" data-rel-p="${p}" title="Release ${_esc(LEVELS.names[p])}">Release</button>`
                : `<span class="rel-spacer"></span>`
            }
          </div>`

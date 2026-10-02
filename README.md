@@ -21,7 +21,7 @@ call is a naked write, and the last one wins.
 
 Building automation solved this a long time ago. BACnet gives every commandable point a priority
 array: sixteen levels, the lowest-numbered occupied level wins, and writers release their claim when
-they are done. This is that idea, trimmed to five levels because sixteen is more than a house needs.
+they are done. This is that idea, trimmed to eight levels because sixteen is more than a house needs.
 
 ## What it looks like
 
@@ -42,7 +42,7 @@ entity's ordinary controls (the toggle, the brightness slider, the cover positio
 commands carry the level you picked. Set a light to 47% at Manual Emergency for half an hour and
 that is exactly what gets written.
 
-<img src="docs/images/priority-picker.png" alt="The level picker open, showing all five levels" width="560">
+<img src="docs/images/priority-picker.png" alt="The level picker open, showing every level" width="560">
 
 ## The levels
 
@@ -52,7 +52,10 @@ that is exactly what gets written.
 | 2 | Automatic Emergency | Life-safety automations (smoke, freeze, water leak) |
 | 3 | Manual | You, when you do not want ordinary automations interfering |
 | 4 | Automatic | An automation that needs to hold against ordinary traffic |
-| 5 | **Default** | **Everything else** |
+| 5 | Occupancy | Motion and presence lighting, occupied-room setpoints |
+| 6 | Peak Demand Limit | Loads shed or held for a utility peak window |
+| 7 | Scheduled | Time-of-day baselines and background writers like adaptive lighting |
+| 8 | **Default** | **Everything else** |
 
 The lowest-numbered occupied level drives the device. Writes at the same level replace each other.
 A command at 3 cannot be overridden by an automation writing at 4, but a smoke alarm writing at 2
@@ -61,9 +64,16 @@ still gets through.
 When a level is released, control falls to the next occupied level down, and that command is
 re-issued **as it stands right now**, not as a snapshot taken when the override began.
 
+### Renaming levels
+
+Every name is yours to change, from the **Level names** section of the integration's **Configure**
+dialog. The numbers are what arbitrate, so renaming 2 to "Burst pipe" changes every picker, logbook
+entry and service form, but never what outranks what. Leave a field blank to get the shipped name
+back.
+
 ## It changes nothing until you ask it to
 
-Everything defaults to level 5, including automations. Since same-level writes replace each other, a
+Everything defaults to level 8, including automations. Since same-level writes replace each other, a
 house that never mentions priority behaves exactly as it does today: last command wins, and you can
 always countermand an automation from the app (though that automation may fire again and countermand
 you).
@@ -158,22 +168,22 @@ The array now holds:
 
 ```
 3  Manual    turn_on    2h 0m left    <- driving
-5  Default   turn_on
+8  Default   turn_on
 ```
 
 At 10pm the automation fires. The light does not turn off. Home Assistant records that something
-wants it off at level 5, but level 5 did not win:
+wants it off at level 8, but level 8 did not win:
 
 ```
 3  Manual    turn_on    1h 0m left    <- driving
-5  Default   turn_off
+8  Default   turn_off
 ```
 
 At 11pm the lease expires and level 3 clears. Default is the only occupied level left, so its
 command is dispatched and the light goes off:
 
 ```
-5  Default   turn_off                 <- driving
+8  Default   turn_off                 <- driving
 ```
 
 Notice what did not happen: nothing was captured at 9pm and replayed at 11pm. The lease does not
@@ -184,7 +194,7 @@ the whole time rather than discarded. A lease also survives a restart, which a `
 
 Omit `priority_ttl` (or pass `0`) to hold until something releases it. An override with no end is
 easy to issue and easy to forget, and until it is released everything underneath it is dead. It is
-rejected at level 5, which has nothing below it to expire back to.
+rejected at level 8, which has nothing below it to expire back to.
 
 ## Physical switches
 
@@ -238,10 +248,10 @@ data:
 
 | Field | Required | Notes |
 |---|---|---|
-| `priority` | yes | 1 to 5 |
+| `priority` | yes | 1 to 8 |
 | `service` | yes | The bare domain service (`turn_on`, `set_temperature`). The domain comes from the target entity. |
 | `data` | no | The payload that service would take |
-| `priority_ttl` | no | Duration. Rejected at level 5. |
+| `priority_ttl` | no | Duration. Rejected at level 8. |
 
 Both the service and the payload are validated before anything is written, and every target is
 validated before any slot is written. A slot that cannot dispatch would still win arbitration and
@@ -304,14 +314,15 @@ arrays:
       "2": null
       "3": null
       "4": null
-      "5": {...}
+      # ...
+      "8": {...}
 ```
 
 Notes that will save you an hour:
 
-- **Slot keys are strings**, `"1"` through `"5"`, not integers.
+- **Slot keys are strings**, `"1"` through `"8"`, not integers.
 - The `effective_*` fields are `null` only when *nothing at all* holds the entity, which is not the
-  same as Default holding it. An ordinary command lands at 5 and reports as level 5. In practice
+  same as Default holding it. An ordinary command lands at 8 and reports as level 8. In practice
   `null` shows up after a restart, for an entity nothing has commanded yet.
 
 So the test for "something is overriding this" is:
@@ -319,7 +330,7 @@ So the test for "something is overriding this" is:
 ```yaml
 - condition: template
   value_template: >
-    {{ priority_state.arrays['light.porch'].effective_priority not in [5, none] }}
+    {{ priority_state.arrays['light.porch'].effective_priority not in [8, none] }}
 ```
 
 and to branch on a specific level:
@@ -396,12 +407,13 @@ Set at install time and changeable afterwards from the integration's **Configure
 | Scope | All entities | Arbitrate every entity in the supported domains, or only a selected set |
 | Excluded entities | none | Never arbitrated, even under `all` |
 | Managed entities / areas / labels | none | Under `selected` scope, what to include |
-| Default priority for users | 5 | The level a command gets when a person does not name one |
-| Default priority for automations | 5 | The same, for automations |
+| Default priority for users | 8 | The level a command gets when a person does not name one |
+| Default priority for automations | 8 | The same, for automations |
 | Track out-of-band changes | on | Record physical switches and vendor apps at Default |
+| Level names | shipped names | Rename any level; see above |
 
-Changing the two default-priority options away from 5 is the one setting that can surprise you, for
-the reasons in the section above about why everything defaults to 5.
+Changing the two default-priority options away from 8 is the one setting that can surprise you, for
+the reasons in the section above about why everything defaults to 8.
 
 ## Installation
 
@@ -414,6 +426,16 @@ copy `custom_components/priority` into your config directory and restart.
 
 Before 0.1.7 the integration did not appear in the Add Integration list at all; on an older version
 the second button above starts the setup directly.
+
+### Upgrading from 0.1.x
+
+0.2.0 moves Default from 5 to 8 to make room for three new levels; 1 to 4 are unchanged. The upgrade
+moves your saved default-priority options for you. Anything you wrote by hand still needs a look:
+
+- A `priority: 5` in an automation or script now means Occupancy, a level that holds and survives a
+  restart; delete it to get Default back.
+- A `priority-control-card` with `default_priority: 5` should become `8`.
+- Templates comparing `effective_priority` against `5` should compare against `8`.
 
 **Hard-refresh your browser afterwards** so the dashboard parts load. The cards register themselves,
 so there is no Lovelace resource step.
@@ -473,8 +495,8 @@ sensor and the overrides card exist to make a forgotten hold visible, but they o
   custom integration to add controls to a built-in card. It is written to fail closed: if a Home
   Assistant update breaks it, the row stops appearing and nothing else changes. The tile card feature
   uses a supported extension point and is the fallback.
-- Every override level (1 to 4) is restored across a restart, leases included. A lease that lapsed
-  while Home Assistant was down is dropped rather than resurrected. Level 5 is not restored, since it
+- Every override level (1 to 7) is restored across a restart, leases included. A lease that lapsed
+  while Home Assistant was down is dropped rather than resurrected. Level 8 is not restored, since it
   is ordinary last-wins traffic and a stored copy of it would be a claim about physical reality that
   may have moved while Home Assistant was down.
 - A restored hold at level 1 or 2 is re-issued once, about half a minute after startup finishes.

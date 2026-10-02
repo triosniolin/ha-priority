@@ -43,7 +43,10 @@ async def test_priority_fields_appear_in_service_descriptions(
         "2 - Automatic Emergency",
         "3 - Manual",
         "4 - Automatic",
-        "5 - Default",
+        "5 - Occupancy",
+        "6 - Peak Demand Limit",
+        "7 - Scheduled",
+        "8 - Default",
     ]
 
 

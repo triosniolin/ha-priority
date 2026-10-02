@@ -27,7 +27,6 @@ from .const import (
     MAX_PRIORITY,
     MIN_PRIORITY,
     PRI_DEFAULT,
-    PRIORITY_NAMES,
     SERVICE_GET,
     SERVICE_RELINQUISH,
     SERVICE_RELINQUISH_ALL,
@@ -93,6 +92,7 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
     async def _relinquish(call: ServiceCall) -> None:
         """Clear one slot and hand control to whatever wins next."""
         priority = call.data[ATTR_PRIORITY]
+        names = manager.priority_names
         for entity_id in _with_members(hass, _targets(hass, call)):
             array = manager.async_peek_array(entity_id)
             if array is None:
@@ -106,9 +106,9 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
                 fell_to = array.effective_priority()
                 manager.async_logbook(
                     entity_id,
-                    f"{PRIORITY_NAMES[priority]} override released"
+                    f"{names[priority]} override released"
                     + (
-                        f", returned to {PRIORITY_NAMES[fell_to]}"
+                        f", returned to {names[fell_to]}"
                         if fell_to is not None
                         else ", no longer under priority control"
                     ),
@@ -151,7 +151,7 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
         if ttl is not None and priority == MAX_PRIORITY:
             raise ServiceValidationError(
                 f"priority_ttl is not valid at priority {MAX_PRIORITY} "
-                f"({PRIORITY_NAMES[MAX_PRIORITY]}): it is the lowest level, so "
+                f"({manager.priority_names[MAX_PRIORITY]}): it is the lowest level, so "
                 "there is nothing for it to expire back to"
             )
 
@@ -195,7 +195,7 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
         for entity_id in _targets(hass, call):
             array = manager.async_peek_array(entity_id)
             result[entity_id] = (
-                array.as_dict()
+                array.as_dict(manager.priority_names)
                 if array is not None
                 else {
                     "entity_id": entity_id,

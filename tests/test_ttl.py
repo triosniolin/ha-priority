@@ -185,7 +185,7 @@ async def test_ttl_accepts_a_duration(priority_entry, demo_hass, freezer) -> Non
 
 
 async def test_ttl_rejected_at_manual_low(priority_entry, demo_hass) -> None:
-    """Priority 5 is the floor - there is nothing to expire back to."""
+    """Default is the floor - there is nothing to expire back to."""
     with pytest.raises(ServiceValidationError):
         await demo_hass.services.async_call(
             "light",

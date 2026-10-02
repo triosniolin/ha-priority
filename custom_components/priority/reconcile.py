@@ -7,7 +7,7 @@ standing at a wall switch, and so a marginal Zigbee link cannot become a
 command loop.
 
 A restart is the one case that rule does not cover honestly. A change during
-downtime was never observed by anything - there is no slot 5 recording it and
+downtime was never observed by anything - there is no Default slot recording it and
 nobody decided it. A power blip that returned a relay to its default is not a
 person expressing intent, and the array comes back believing it is in control
 of a device it may no longer match.
@@ -111,7 +111,7 @@ async def async_reconcile_emergency_holds(
         state = hass.states.get(entity_id)
         if state is None or state.state in _IGNORED_STATES:
             # Not reachable yet. Re-driving now would just fail; the observer
-            # re-drives on return-from-unavailable for anything held at 1-4.
+            # re-drives on return-from-unavailable for anything held above Default.
             _LOGGER.debug(
                 "Priority: %s held at %s but not available, leaving it to the "
                 "observer",

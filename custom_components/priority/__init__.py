@@ -1,17 +1,17 @@
-"""Priority command arbitration for Home Assistant.
-
-A BACnet-style priority array (ASHRAE 135) trimmed to five levels:
+"""Priority command arbitration: a BACnet-style priority array (ASHRAE 135) in eight levels.
 
     1  Manual Emergency
     2  Automatic Emergency
     3  Manual
     4  Automatic
-    5  Default             <- everything, unless the caller says otherwise
+    5  Occupancy
+    6  Peak Demand Limit
+    7  Scheduled
+    8  Default             <- everything, unless the caller says otherwise
 
-The lowest-numbered occupied slot drives the device, and clearing one re-issues
-the next as it stands now rather than restoring a snapshot. Same-level writes
-replace each other, so until a call names a level the house behaves exactly
-like stock Home Assistant.
+Every name is user-editable. The lowest-numbered occupied slot drives the device, and clearing one
+re-issues the next as it stands now. Same-level writes replace each other, so until a call names a
+level the house behaves exactly like stock Home Assistant.
 """
 
 from __future__ import annotations
@@ -32,7 +32,13 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
-from .const import ARBITRATED_SERVICES
+from .const import (
+    ARBITRATED_SERVICES,
+    CONF_DEFAULT_AUTOMATION_PRIORITY,
+    CONF_DEFAULT_USER_PRIORITY,
+    CONFIG_MINOR_VERSION,
+    LEGACY_PRI_DEFAULT,
+)
 from .descriptions import async_patch_descriptions, async_restore_descriptions
 from .observer import async_start_observer
 from .reconcile import async_schedule_startup_reconcile
@@ -67,6 +73,25 @@ def _card_fingerprint() -> str:
         return "0"
 
 type PriorityConfigEntry = ConfigEntry[PriorityManager]
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: PriorityConfigEntry) -> bool:
+    if entry.version > 1:
+        return False
+    if entry.minor_version < CONFIG_MINOR_VERSION:
+        options = {
+            key: value
+            for key, value in entry.options.items()
+            if not (
+                key in (CONF_DEFAULT_USER_PRIORITY, CONF_DEFAULT_AUTOMATION_PRIORITY)
+                and int(value) == LEGACY_PRI_DEFAULT
+            )
+        }
+        hass.config_entries.async_update_entry(
+            entry, options=options, minor_version=CONFIG_MINOR_VERSION
+        )
+        _LOGGER.info("Priority migrated its options to the eight-level ladder")
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: PriorityConfigEntry) -> bool:
@@ -114,6 +139,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: PriorityConfigEntry) -> 
 
     # Without this the fields are YAML-only; no form offers them.
     await async_patch_descriptions(hass, manager)
+
+    @callback
+    def _on_renamed() -> None:
+        hass.async_create_task(async_patch_descriptions(hass, manager, retry=False))
+
+    entry.async_on_unload(manager.async_add_names_listener(_on_renamed))
     await _async_register_frontend(hass)
     entry.async_on_unload(async_start_observer(hass, manager))
     entry.async_on_unload(async_schedule_startup_reconcile(hass, manager))

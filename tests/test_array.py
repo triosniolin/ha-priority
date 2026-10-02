@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import pytest
+from homeassistant.util import dt as dt_util
 
 from custom_components.priority.array import PriorityArray, Slot
 from custom_components.priority.const import (
     PRI_AUTO,
     PRI_AUTO_EMERGENCY,
-    PRI_MANUAL_EMERGENCY,
-    PRI_MANUAL,
     PRI_DEFAULT,
+    PRI_MANUAL,
+    PRI_MANUAL_EMERGENCY,
+    PRI_SCHEDULED,
+    PRIORITY_NAMES,
 )
-from homeassistant.util import dt as dt_util
 
 
 def _slot(service: str = "turn_on", **data) -> Slot:
@@ -70,22 +72,24 @@ def test_invalid_priority_rejected() -> None:
     with pytest.raises(ValueError):
         array.write(0, _slot())
     with pytest.raises(ValueError):
-        array.write(6, _slot())
+        array.write(PRI_DEFAULT + 1, _slot())
 
 
 def test_storage_round_trip_persists_every_override_level() -> None:
-    """Levels 1-4 restore; only slot 5 is re-derived rather than restored."""
+    """Every level above Default restores; Default is re-derived rather than restored."""
     array = PriorityArray("light.test")
     array.write(PRI_MANUAL, _slot("turn_on", brightness=120))
     array.write(PRI_AUTO, _slot("turn_off"))
+    array.write(PRI_SCHEDULED, _slot("turn_on", brightness=40))
     array.write(PRI_DEFAULT, _slot("turn_on"))
 
     stored = array.to_storage()
-    assert set(stored["slots"]) == {str(PRI_MANUAL), str(PRI_AUTO)}
+    assert set(stored["slots"]) == {str(PRI_MANUAL), str(PRI_AUTO), str(PRI_SCHEDULED)}
 
     restored = PriorityArray.from_storage("light.test", stored)
     assert restored.get(PRI_MANUAL).data == {"brightness": 120}
     assert restored.get(PRI_AUTO).service == "turn_off"
+    assert restored.get(PRI_SCHEDULED).data == {"brightness": 40}
     assert restored.get(PRI_DEFAULT) is None
 
 
@@ -100,8 +104,8 @@ def test_from_storage_drops_malformed_slots() -> None:
 def test_as_dict_reports_the_winner() -> None:
     array = PriorityArray("light.test")
     array.write(PRI_AUTO, _slot("turn_off"))
-    snapshot = array.as_dict()
+    snapshot = array.as_dict({**PRIORITY_NAMES, PRI_AUTO: "Peak shaving"})
     assert snapshot["effective_priority"] == PRI_AUTO
-    assert snapshot["effective_priority_name"] == "Automatic"
+    assert snapshot["effective_priority_name"] == "Peak shaving"
     assert snapshot["effective_command"]["service"] == "turn_off"
-    assert snapshot["slots"]["5"] is None
+    assert snapshot["slots"][str(PRI_DEFAULT)] is None

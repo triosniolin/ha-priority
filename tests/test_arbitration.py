@@ -41,7 +41,7 @@ async def _call(hass, service, priority=None, entity_id=LIGHT, **data):
 async def test_explicit_default_is_overridden_by_an_automation(
     priority_entry, demo_hass
 ) -> None:
-    """An explicit PRI 5 write leaves automations at PRI 4 free to override."""
+    """An explicit Default write leaves automations at PRI 4 free to override."""
     await _call(demo_hass, "turn_on", PRI_DEFAULT)
     assert demo_hass.states.get(LIGHT).state == "on"
 
@@ -213,7 +213,7 @@ async def test_relinquish_empty_array_leaves_device_alone(
 async def test_everything_defaults_to_the_same_level(
     priority_entry, demo_hass, hass_admin_user
 ) -> None:
-    """People and automations both land in slot 5 unless told otherwise."""
+    """People and automations both land at Default unless told otherwise."""
     await demo_hass.services.async_call(
         "light",
         "turn_on",
@@ -276,7 +276,7 @@ async def test_wall_switch_still_works_after_an_automation(
     """The lockout regression, from the other direction.
 
     An automation commanding an entity must not make it deaf to the wall
-    switch. Both write slot 5, so the last one wins.
+    switch. Both write Default, so the last one wins.
     """
     await demo_hass.services.async_call(
         "switch", "turn_on", {"entity_id": "switch.one"}, blocking=True

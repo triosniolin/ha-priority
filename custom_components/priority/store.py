@@ -56,10 +56,10 @@ from .const import (
     MAX_PRIORITY,
     MIN_PRIORITY,
     PRI_DEFAULT,
-    PRIORITY_NAMES,
     SCOPE_ALL,
     STORAGE_KEY,
     STORAGE_VERSION,
+    priority_names,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -119,6 +119,7 @@ class PriorityManager:
     def __init__(self, hass: HomeAssistant, options: dict[str, Any]) -> None:
         self.hass = hass
         self._options = dict(options)
+        self._names = priority_names(self._options)
         self._arrays: dict[str, PriorityArray] = {}
         self._store: Store[dict[str, Any]] = Store(
             hass, STORAGE_VERSION, STORAGE_KEY
@@ -129,6 +130,7 @@ class PriorityManager:
         # context id -> (priority, monotonic stamp); bounded and TTL'd.
         self._our_contexts: OrderedDict[str, tuple[int, float]] = OrderedDict()
         self._listeners: list[Callable[[str], None]] = []
+        self._names_listeners: list[Callable[[], None]] = []
         # Maintained incrementally so the hot path never scans every array.
         self._override_set: frozenset[str] = frozenset()
         # Cached because auth lookups are coroutines and the write path is a @callback.
@@ -153,10 +155,20 @@ class PriorityManager:
     def options(self) -> dict[str, Any]:
         return self._options
 
+    @property
+    def priority_names(self) -> dict[int, str]:
+        return self._names
+
     @callback
     def async_update_options(self, options: dict[str, Any]) -> None:
         self._options = dict(options)
+        names = priority_names(self._options)
+        renamed = names != self._names
+        self._names = names
         self._managed_cache = None
+        if renamed:
+            for listener in list(self._names_listeners):
+                listener()
 
     @property
     def track_out_of_band(self) -> bool:
@@ -269,6 +281,16 @@ class PriorityManager:
         def _remove() -> None:
             if listener in self._listeners:
                 self._listeners.remove(listener)
+
+        return _remove
+
+    @callback
+    def async_add_names_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        self._names_listeners.append(listener)
+
+        def _remove() -> None:
+            if listener in self._names_listeners:
+                self._names_listeners.remove(listener)
 
         return _remove
 
@@ -523,9 +545,9 @@ class PriorityManager:
             fell_to = current.effective_priority()
             self.async_logbook(
                 entity_id,
-                f"{PRIORITY_NAMES[priority]} override expired"
+                f"{self._names[priority]} override expired"
                 + (
-                    f", returned to {PRIORITY_NAMES[fell_to]}"
+                    f", returned to {self._names[fell_to]}"
                     if fell_to is not None
                     else ", no longer under priority control"
                 ),
@@ -680,4 +702,4 @@ class PriorityManager:
     async def async_save(self) -> None:
         await self._store.async_save(self._data_to_save())
 
-    # No startup seed of slot 5: relinquish_all would re-drive a command nobody issued.
+    # No startup seed of Default: relinquish_all would re-drive a command nobody issued.

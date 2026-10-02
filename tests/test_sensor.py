@@ -5,7 +5,7 @@ from __future__ import annotations
 from homeassistant.util import dt as dt_util
 
 from custom_components.priority.array import Slot
-from custom_components.priority.const import PRI_AUTO, PRI_MANUAL
+from custom_components.priority.const import PRI_AUTO, PRI_DEFAULT, PRI_MANUAL
 
 LIGHT = "light.one"
 
@@ -55,7 +55,7 @@ async def test_default_is_not_published_as_a_level(
         LIGHT, PRI_MANUAL, Slot("light", "turn_on", {}, now, "user:Ada")
     )
     manager.async_write_slot(
-        LIGHT, 5, Slot("light", "turn_off", {}, now, "out_of_band")
+        LIGHT, PRI_DEFAULT, Slot("light", "turn_off", {}, now, "out_of_band")
     )
     manager.async_notify(LIGHT)
     await demo_hass.async_block_till_done()

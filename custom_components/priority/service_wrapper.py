@@ -26,7 +26,6 @@ from .const import (
     ATTR_PRIORITY_TTL,
     MAX_PRIORITY,
     MIN_PRIORITY,
-    PRIORITY_NAMES,
 )
 from .store import PriorityManager, async_inherited, async_run_original
 
@@ -208,7 +207,7 @@ def _build_wrapper(
         if ttl is not None and priority == MAX_PRIORITY:
             raise ServiceValidationError(
                 f"priority_ttl is not valid at priority {MAX_PRIORITY} "
-                f"({PRIORITY_NAMES[MAX_PRIORITY]}): it is the lowest level, so "
+                f"({manager.priority_names[MAX_PRIORITY]}): it is the lowest level, so "
                 "there is nothing for it to expire back to"
             )
 
@@ -236,7 +235,7 @@ def _build_wrapper(
                         lease = f" for {timedelta(seconds=round(remaining))}"
                     manager.async_logbook(
                         entity_id,
-                        f"held at {PRIORITY_NAMES[priority]} "
+                        f"held at {manager.priority_names[priority]} "
                         f"({domain}.{resolved}){lease}",
                         call.context,
                     )

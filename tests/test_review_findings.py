@@ -192,4 +192,4 @@ def test_service_descriptions_name_a_level_that_actually_exists() -> None:
     ).read_text()
 
     assert "Manual Low" not in strings
-    assert f"5 ({PRIORITY_NAMES[MAX_PRIORITY]})" in strings
+    assert f"{MAX_PRIORITY} ({PRIORITY_NAMES[MAX_PRIORITY]})" in strings

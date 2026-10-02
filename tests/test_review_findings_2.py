@@ -19,6 +19,7 @@ from custom_components.priority.const import (
     CONF_MANAGED_LABELS,
     CONF_SCOPE,
     DOMAIN,
+    PRI_DEFAULT,
     PRI_MANUAL,
     SCOPE_SELECTED,
 )
@@ -118,7 +119,7 @@ async def test_thermostat_changed_out_of_band_is_recorded_as_its_mode(
     demo_hass.states.async_set(CLIMATE, "heat", {}, context=Context())
     await demo_hass.async_block_till_done()
 
-    slot = await _slot(demo_hass, CLIMATE, 5)
+    slot = await _slot(demo_hass, CLIMATE, PRI_DEFAULT)
     assert slot["service"] == "set_hvac_mode"
     assert slot["data"] == {"hvac_mode": "heat"}
 

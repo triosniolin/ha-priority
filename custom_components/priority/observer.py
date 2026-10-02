@@ -32,6 +32,27 @@ def async_start_observer(hass: HomeAssistant, manager: PriorityManager):
     """Returns an unsubscribe."""
 
     @callback
+    def _record(entity_id: str, domain: str, state: str) -> None:
+        command = command_for_state(domain, state)
+        if command is None:
+            return
+        service, slot_data = command
+        if service not in ARBITRATED_SERVICES.get(domain, frozenset()):
+            return
+        manager.async_get_array(entity_id).write(
+            PRI_DEFAULT,
+            Slot(
+                domain=domain,
+                service=service,
+                data=slot_data,
+                written_at=dt_util.utcnow(),
+                written_by="out_of_band",
+            ),
+        )
+        manager.async_notify(entity_id)
+        _LOGGER.debug("Priority recorded %s on %s at Default", state, entity_id)
+
+    @callback
     def _handle(event: Event[EventStateChangedData]) -> None:
         if not manager.track_out_of_band:
             return
@@ -55,6 +76,11 @@ def async_start_observer(hass: HomeAssistant, manager: PriorityManager):
         if old_state is not None and old_state.state in _IGNORED_STATES:
             if new_state.state not in _IGNORED_STATES:
                 array = manager.async_peek_array(entity_id)
+                # Mesh radios come up via unavailable, so this is their come-online report.
+                # Only into an empty slot: a flap must not replace a richer commanded payload.
+                if array is None or array.get(PRI_DEFAULT) is None:
+                    _record(entity_id, domain, new_state.state)
+                    array = manager.async_peek_array(entity_id)
                 held = array.effective_priority() if array is not None else None
                 if held is not None and held < PRI_DEFAULT:
                     hass.async_create_task(
@@ -73,30 +99,6 @@ def async_start_observer(hass: HomeAssistant, manager: PriorityManager):
         if manager.async_is_our_context(new_state.context):
             return
 
-        command = command_for_state(domain, new_state.state)
-        if command is None:
-            return
-        service, slot_data = command
-        if service not in ARBITRATED_SERVICES.get(domain, frozenset()):
-            return
-
-        array = manager.async_get_array(entity_id)
-        array.write(
-            PRI_DEFAULT,
-            Slot(
-                domain=domain,
-                service=service,
-                data=slot_data,
-                written_at=dt_util.utcnow(),
-                written_by="out_of_band",
-            ),
-        )
-        manager.async_notify(entity_id)
-        _LOGGER.debug(
-            "Priority recorded out-of-band %s on %s into slot %s",
-            new_state.state,
-            entity_id,
-            PRI_DEFAULT,
-        )
+        _record(entity_id, domain, new_state.state)
 
     return hass.bus.async_listen(EVENT_STATE_CHANGED, _handle)

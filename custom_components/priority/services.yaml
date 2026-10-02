@@ -8,7 +8,7 @@ relinquish:
       selector:
         number:
           min: 1
-          max: 5
+          max: 8
           mode: box
 
 relinquish_all:
@@ -25,7 +25,7 @@ set:
       selector:
         number:
           min: 1
-          max: 5
+          max: 8
           mode: box
     service:
       required: true

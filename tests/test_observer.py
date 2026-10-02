@@ -190,13 +190,73 @@ async def test_unavailable_transition_is_not_recorded_as_manual(
     assert array.get(PRI_DEFAULT).service == "turn_on"
 
 
+async def _come_online(hass, entity_id: str, state: str) -> None:
+    """A Zigbee or Z-Wave entity: restored as unavailable, then the radio reports in."""
+    hass.states.async_set(entity_id, STATE_UNAVAILABLE)
+    await hass.async_block_till_done()
+    hass.states.async_set(entity_id, state)
+    await hass.async_block_till_done()
+
+
+async def test_coming_online_via_unavailable_fills_an_empty_default(
+    priority_entry, demo_hass
+) -> None:
+    await _come_online(demo_hass, SWITCH, "off")
+
+    slot = priority_entry.runtime_data.async_peek_array(SWITCH).get(PRI_DEFAULT)
+    assert slot.service == "turn_off"
+    assert slot.written_by == "out_of_band"
+
+
+async def test_a_flap_does_not_replace_a_commanded_default(
+    priority_entry, demo_hass
+) -> None:
+    """A bare turn_on read off the state would lose the brightness on the next release."""
+    await demo_hass.services.async_call(
+        "light", "turn_on", {"entity_id": LIGHT, "brightness": 55}, blocking=True
+    )
+    await demo_hass.async_block_till_done()
+
+    await _come_online(demo_hass, LIGHT, "on")
+
+    slot = priority_entry.runtime_data.async_peek_array(LIGHT).get(PRI_DEFAULT)
+    assert slot.data == {"brightness": 55}
+    assert slot.written_by != "out_of_band"
+
+
+async def test_release_returns_a_mesh_device_to_its_come_online_state(
+    priority_entry, demo_hass
+) -> None:
+    """Before this, Default was empty, so releasing Automatic left the device on."""
+    await _come_online(demo_hass, SWITCH, "off")
+
+    await demo_hass.services.async_call(
+        "switch", "turn_on", {"entity_id": SWITCH, "priority": PRI_AUTO}, blocking=True
+    )
+    await demo_hass.async_block_till_done()
+    assert demo_hass.states.get(SWITCH).state == "on"
+
+    await demo_hass.services.async_call(
+        DOMAIN, "relinquish", {"entity_id": SWITCH, "priority": PRI_AUTO}, blocking=True
+    )
+    await demo_hass.async_block_till_done()
+    assert demo_hass.states.get(SWITCH).state == "off"
+
+
+async def test_coming_online_sends_nothing_at_default(priority_entry, demo_hass) -> None:
+    """Recording is not commanding; a flapping link must not become a command stream."""
+    await _come_online(demo_hass, LIGHT, "on")
+    assert (len(_light().turn_on_calls), len(_light().turn_off_calls)) == (0, 0)
+    assert priority_entry.runtime_data.async_peek_array(LIGHT).get(PRI_DEFAULT) is not None
+
+
 # ----------------------------------------------------------------------
 # Restart survival
 # ----------------------------------------------------------------------
 
 
 async def test_high_slots_survive_a_restart(demo_hass, entry_options) -> None:
-    """Every override level restores; only slot 5 is deliberately re-derived.
+    """Every override level restores; only Default is deliberately re-derived.
 
     Level 4 used to be dropped here, on the reasoning that an automation
     re-asserts on its own triggers. An automation that fires on an edge (a peak

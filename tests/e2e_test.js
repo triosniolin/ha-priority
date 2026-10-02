@@ -38,7 +38,9 @@ const HASS_STUB = `{
   states: {
     "switch.pump": { entity_id: "switch.pump", state: "off",
                      attributes: { friendly_name: "Pump" } },
-    "sensor.active_overrides": { state: "0", attributes: { overrides: {} } },
+    "sensor.active_overrides": { state: "0", attributes: { overrides: {}, priority_levels: {
+      1: "Manual Emergency", 2: "Automatic Emergency", 3: "Manual", 4: "Automatic",
+      5: "Occupancy", 6: "Peak Demand Limit", 7: "Scheduled", 8: "Default" } } },
   },
   callService: (d, s, data) => { window.__calls.push({ d, s, data }); },
   connection: {
@@ -103,7 +105,7 @@ const pick = (id) => `#${id}`;
   );
 
   const optCount = await page.locator("#p-menu .opt").count();
-  ok(optCount === 5, `every level is an option, got ${optCount}`);
+  ok(optCount === 8, `every level is an option, got ${optCount}`);
 
   console.log("\n-- choosing a level --");
   await page.click('.opt[data-v="1"]');
@@ -191,6 +193,99 @@ const pick = (id) => `#${id}`;
     return top === opt ? "ok" : "covered by <" + top.tagName.toLowerCase() + ">";
   });
   ok(reachable === "ok", `an option is actually clickable: ${reachable}`);
+
+  console.log("\n-- row at the bottom of a scrolled dialog --");
+  // More-info lists inline, so a row at the fold would open its list out of sight.
+  await page.setContent(`<!doctype html><html><body style="margin:0">
+    <div style="transform: translateZ(0);">
+      <div id="dialog" style="height: 600px; overflow-y: auto; width: 420px;">
+        <div style="height: 560px;">filler above the row</div>
+        <div id="host"></div>
+        <div style="height: 40px;"></div>
+      </div>
+    </div>
+  </body></html>`);
+  await page.addScriptTag({ path: CARD });
+  await page.evaluate(`(async () => {
+    const row = document.createElement("priority-row");
+    document.getElementById("host").appendChild(row);
+    row.hass = ${HASS_STUB};
+    row.stateObj = { entity_id: "switch.pump" };
+    window.__row = row;
+    await new Promise((r) => setTimeout(r, 50));
+  })()`);
+  await page.click(pick("p"));
+  await page.waitForTimeout(600);
+  const fold = await page.evaluate(() => {
+    const d = document.getElementById("dialog").getBoundingClientRect();
+    const opts = window.__row.shadowRoot.querySelectorAll("#p-menu .opt");
+    const last = opts[opts.length - 1].getBoundingClientRect();
+    return { inside: last.bottom <= d.bottom + 1 && last.top >= d.top - 1, last: last.bottom, dialog: d.bottom };
+  });
+  ok(fold.inside, `the whole list scrolls into view on open: ${JSON.stringify(fold)}`);
+  const atEnd = await page.evaluate(() => {
+    const d = document.getElementById("dialog");
+    return d.scrollHeight - d.clientHeight - d.scrollTop <= 1;
+  });
+  ok(atEnd, "all the way to the end, so the list's bottom edge is in sight");
+
+  console.log("\n-- tall dialog: stops before the picker leaves --");
+  await page.setContent(`<!doctype html><html><body style="margin:0">
+    <div style="transform: translateZ(0);">
+      <div id="dialog" style="height: 400px; overflow-y: auto; width: 420px;">
+        <div style="height: 360px;">filler above the row</div>
+        <div id="host"></div>
+        <div style="height: 900px;">long attributes section below</div>
+      </div>
+    </div>
+  </body></html>`);
+  await page.addScriptTag({ path: CARD });
+  await page.evaluate(`(async () => {
+    const row = document.createElement("priority-row");
+    document.getElementById("host").appendChild(row);
+    row.hass = ${HASS_STUB};
+    row.stateObj = { entity_id: "switch.pump" };
+    window.__row = row;
+    await new Promise((r) => setTimeout(r, 50));
+  })()`);
+  await page.click(pick("p"));
+  await page.waitForTimeout(600);
+  const tall = await page.evaluate(() => {
+    const d = document.getElementById("dialog").getBoundingClientRect();
+    const b = window.__row.shadowRoot.getElementById("p").getBoundingClientRect();
+    const opts = window.__row.shadowRoot.querySelectorAll("#p-menu .opt");
+    const last = opts[opts.length - 1].getBoundingClientRect();
+    return { button: b.top >= d.top - 1, list: last.bottom <= d.bottom + 1 };
+  });
+  ok(tall.button, "the picker button stays in sight");
+  ok(tall.list, "and the whole list still shows");
+
+  console.log("\n-- slotted into a shadow-root scroller, like HA's dialog --");
+  await page.setContent(`<!doctype html><html><body style="margin:0"><x-dialog id="xd"></x-dialog></body></html>`);
+  await page.addScriptTag({ path: CARD });
+  await page.evaluate(`(async () => {
+    customElements.define("x-dialog", class extends HTMLElement {
+      constructor() {
+        super();
+        this.attachShadow({ mode: "open" }).innerHTML =
+          '<div id="scroller" style="height:600px;overflow-y:auto;width:420px">' +
+          '<div style="height:560px"></div><slot></slot><div style="height:40px"></div></div>';
+      }
+    });
+    const row = document.createElement("priority-row");
+    document.getElementById("xd").appendChild(row);
+    row.hass = ${HASS_STUB};
+    row.stateObj = { entity_id: "switch.pump" };
+    window.__row = row;
+    await new Promise((r) => setTimeout(r, 50));
+  })()`);
+  await page.click(pick("p"));
+  await page.waitForTimeout(600);
+  const slotted = await page.evaluate(() => {
+    const sc = document.getElementById("xd").shadowRoot.getElementById("scroller");
+    return sc.scrollHeight - sc.clientHeight - sc.scrollTop <= 1;
+  });
+  ok(slotted, "finds the scroller through the slot and scrolls it to the end");
 
   console.log("\n-- under constant state churn --");
   // A real house pushes a new hass object on every state change, and the row
@@ -336,7 +431,7 @@ const pick = (id) => `#${id}`;
   await page.evaluate(`(async () => {
     window.__calls = [];
     const card = document.createElement("priority-control-card");
-    card.setConfig({ entities: ["switch.pump"], default_priority: 5, default_ttl: 0 });
+    card.setConfig({ entities: ["switch.pump"], default_priority: 8, default_ttl: 0 });
     document.getElementById("host").appendChild(card);
     card.hass = ${HASS_STUB};
     window.__card = card;
@@ -428,11 +523,51 @@ const pick = (id) => `#${id}`;
     return { lines: tops.length, height: Math.round(row.getBoundingClientRect().height) };
   });
   ok(compact.lines === 1, `both pickers sit on one line, got ${compact.lines}`);
-  // The native-select version measured 120px in this exact container. Staying
-  // at or under that is the bar: it is the layout the tile card was sized for.
+  // HA gives each feature exactly one grid row (56px + 8px gap) and no way to ask for more.
+  ok(compact.height <= 64, `compact row fits one tile grid row: ${compact.height} <= 64`);
+  const status = await page.evaluate(() => ({
+    text: window.__row.shadowRoot.getElementById("hint").textContent,
+    rel: !window.__row.shadowRoot.getElementById("tile-rel").hidden,
+    slots: getComputedStyle(window.__row.shadowRoot.getElementById("slots")).display,
+  }));
+  ok(status.text.startsWith("Manual"), `held: the status line names the winner: ${status.text}`);
+  ok(status.rel, "with a Release on the same line");
+  ok(status.slots === "none", "and no per-level list, which would spill out of the tile");
+
+  const states = await page.evaluate(async () => {
+    const row = window.__row;
+    const h = () => Math.round(row.getBoundingClientRect().height);
+    const held = h();
+    row._array = { effective_priority: null, slots: {} };
+    row._paintStatus();
+    const empty = h();
+    const emptyText = row.shadowRoot.getElementById("hint").textContent;
+    row._array = { effective_priority: 8, slots: { "8": { service: "turn_on", data: {} } } };
+    row._paintStatus();
+    const dflt = h();
+    row._priority = 3;
+    row._select(3, 0);
+    row._paintStatus();
+    const armed = h();
+    const armedText = row.shadowRoot.getElementById("hint").textContent;
+    row._priority = 8;
+    row._select(8, 0);
+    row._array = { effective_priority: 3, slots: { "3": { service: "turn_on", data: {} } } };
+    row._paintStatus();
+    return { held, empty, dflt, armed, emptyText, armedText };
+  });
   ok(
-    compact.height <= 120,
-    `compact row is no taller than the version it replaced: ${compact.height} <= 120`
+    new Set([states.held, states.empty, states.dflt, states.armed]).size === 1,
+    `the row is one height whatever it shows: ${JSON.stringify(states)}`
+  );
+  ok(states.emptyText.startsWith("Normal"), "nothing held reads as normal behaviour");
+  ok(states.armedText.includes("Manual"), "armed, the line says what the next tap does");
+  await page.evaluate(() => { window.__calls.length = 0; });
+  await page.click("#tile-rel");
+  const relCall = await page.evaluate(() => window.__calls[0]);
+  ok(
+    relCall && relCall.s === "relinquish" && relCall.data.priority === 3,
+    `the status line's Release clears the winning level: ${JSON.stringify(relCall)}`
   );
 
   const openedHeight = await page.evaluate(async () => {
@@ -474,7 +609,7 @@ const pick = (id) => `#${id}`;
   await page.evaluate(`(async () => {
     window.__calls = [];
     const card = document.createElement("priority-control-card");
-    card.setConfig({ entities: ["switch.pump"], default_priority: 5, default_ttl: 0 });
+    card.setConfig({ entities: ["switch.pump"], default_priority: 8, default_ttl: 0 });
     document.getElementById("host").appendChild(card);
     card.hass = ${HASS_STUB};
     window.__card = card;

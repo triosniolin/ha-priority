@@ -120,12 +120,25 @@ global.console.info = () => {};
 
 require(require("path").join(__dirname, "..", "custom_components", "priority", "frontend", "priority-card.js"));
 
+// What the backend publishes with no renames; the card holds no copy of its own.
+const LEVEL_NAMES = {
+  1: "Manual Emergency",
+  2: "Automatic Emergency",
+  3: "Manual",
+  4: "Automatic",
+  5: "Occupancy",
+  6: "Peak Demand Limit",
+  7: "Scheduled",
+  8: "Default",
+};
+
 const calls = [];
 const hass = {
   states: {
     "sensor.active_overrides": {
       state: "1",
       attributes: {
+        priority_levels: LEVEL_NAMES,
         overrides: {
           "light.living_room": {
             priority: 1,
@@ -273,7 +286,7 @@ ok(cc._controls.innerHTML.includes("1 - Manual Emergency"), "priority dropdown p
 ok(cc._controls.innerHTML.includes("30 minutes"), "lease presets populated");
 ok(!cc._controls.innerHTML.includes("<select"), "control card uses no native select");
 ok(
-  (cc._controls.innerHTML.match(/data-v="/g) || []).length === 5 + TTL_COUNT,
+  (cc._controls.innerHTML.match(/data-v="/g) || []).length === 8 + TTL_COUNT,
   "every level and every lease preset is an option button"
 );
 // Light DOM: two of these cards on one dashboard must not fight over ids.
@@ -305,7 +318,7 @@ cc._command("lock.front", "on");
 ok(calls[0].s === "lock", "lock on -> lock");
 
 calls.length = 0;
-cc._priority = 5;
+cc._priority = 8;
 cc._ttl = 1800;
 cc._command("light.living_room", "on");
 ok(
@@ -439,7 +452,7 @@ const tree = {
       data: {},
       expires_at: new Date(Date.now() + 3600000 + 30000).toISOString(),
     },
-    "5": { domain: "light", service: "turn_on", data: {}, expires_at: null },
+    "8": { domain: "light", service: "turn_on", data: {}, expires_at: null },
   },
 };
 r = mkRow("light.living_room", tree);
@@ -471,7 +484,7 @@ ok(
   "buttons carry the level they release"
 );
 ok(
-  !/data-rel-p="5"/.test(slotsHtml),
+  !/data-rel-p="8"/.test(slotsHtml),
   "no Release on Default - nothing underneath for it to fall back to"
 );
 
@@ -504,7 +517,7 @@ r._select(3, 3600);
 const RSEL = window.__priorityInternals.selections;
 ok(RSEL.has("light.living_room"), "armed at Manual before the release");
 r._release();
-ok(r._priority === 5 && r._ttl === 0, "Release all resets the pickers to Default, no lease");
+ok(r._priority === 8 && r._ttl === 0, "Release all resets the pickers to Default, no lease");
 ok(
   !RSEL.has("light.living_room"),
   "and drops the selection, so the next toggle is a plain Default call"
@@ -533,7 +546,7 @@ ok(
 );
 r._array = {
   effective_priority: 4,
-  slots: { "4": tree.slots["4"], "5": tree.slots["5"] },
+  slots: { "4": tree.slots["4"], "8": tree.slots["8"] },
 };
 r._paintSlots();
 ok(
@@ -625,7 +638,7 @@ ok(
   "a call mixing armed and unarmed targets carries no level at all"
 );
 
-armed._select(5, 1800);
+armed._select(8, 1800);
 ok(!SEL.has("light.living_room"), "Default clears the selection");
 calls.length = 0;
 h.callService("light", "turn_on", { entity_id: "light.living_room" });
@@ -641,6 +654,51 @@ internals.wrapCallService(h2);
 calls.length = 0;
 h2.callService("light", "turn_on", { entity_id: "light.living_room" });
 ok(calls.length === 1, "wrapping is idempotent - one call in, one call out");
+
+console.log("\n-- groups: a member's own toggle carries the group's level --");
+SEL.clear();
+const groupStates = {
+  ...hass.states,
+  "light.downstairs": { entity_id: "light.downstairs", state: "on",
+    attributes: { entity_id: ["light.living_room", "light.kitchen_group"] } },
+  "light.kitchen_group": { entity_id: "light.kitchen_group", state: "on",
+    attributes: { entity_id: ["light.kitchen", "light.downstairs"] } },
+};
+const gCalls = [];
+const gh = { states: groupStates, callService: (d, s, data) => gCalls.push({ d, s, data }) };
+internals.wrapCallService(gh);
+
+const grp = new Row();
+grp._hass = gh;
+grp.stateObj = { entity_id: "light.downstairs" };
+grp._priority = 3;
+grp._select(3, 0);
+gh.callService("light", "toggle", { entity_id: "light.living_room" });
+ok(gCalls[0].data.priority === 3, "a member toggled from the group dialog carries the level");
+gh.callService("light", "turn_off", { entity_id: "light.kitchen" });
+ok(gCalls[1].data.priority === 3, "so does a member of a nested group");
+ok(SEL.size === 4, "a group that contains itself does not loop, got " + SEL.size);
+
+const own = { priority: 1, ttl: 0 };
+SEL.set("light.kitchen", own);
+grp.disconnectedCallback();
+ok(!SEL.has("light.downstairs") && !SEL.has("light.living_room"), "closing the dialog disarms the group and its members");
+ok(SEL.get("light.kitchen") === own, "but leaves a member another row armed for itself");
+SEL.clear();
+
+const drill = new Row();
+drill._hass = gh;
+drill.stateObj = { entity_id: "light.downstairs" };
+drill._priority = 2;
+drill._select(2, 0);
+drill.stateObj = { entity_id: "light.living_room" };
+ok(drill._priority === 8 && SEL.size === 0, "a row moved to another entity starts back at Default");
+
+const fresh = new Row();
+fresh._hass = gh;
+fresh.stateObj = { entity_id: "light.downstairs" };
+ok(SEL.size === 0, "opening a group's dialog arms nothing");
+SEL.clear();
 
 console.log("\n-- more-info injection --");
 const inject = window.__priorityInternals.injectPriorityRow;
@@ -738,7 +796,7 @@ setTimeout(() => {
   ok(pMenu.hidden === true, "menu starts closed");
 
   const opts = pMenu.querySelectorAll("[data-v]");
-  ok(opts.length === 5, `every level is an option, got ${opts.length}`);
+  ok(opts.length === 8, `every level is an option, got ${opts.length}`);
 
   const slotsBefore = pk.shadowRoot.getElementById("slots").innerHTML;
   pBtn.onclick();
@@ -801,6 +859,38 @@ setTimeout(() => {
     lease.shadowRoot.getElementById("t").disabled === false,
     "and enabled once a real level is chosen"
   );
+
+  console.log("\n-- level names come from the backend --");
+  const renamedSensor = {
+    state: "0",
+    attributes: {
+      overrides: {},
+      priority_levels: { ...LEVEL_NAMES, 2: "Burst <pipe>", 8: "Normal" },
+    },
+  };
+  const renamed = { states: { "sensor.active_overrides": renamedSensor }, callService: () => {} };
+  const rn = mkRow("switch.pump");
+  rn.hass = renamed;
+  const rnHtml = rn.shadowRoot.innerHTML;
+  ok(rnHtml.includes("Burst &lt;pipe&gt;"), "a rename relabels the row, escaped");
+  ok(!rnHtml.includes("Burst <pipe>"), "a user's name is never markup");
+  ok(
+    rn.shadowRoot.getElementById("p-label").textContent === "Normal",
+    "a renamed Default is still what the row starts on"
+  );
+  ok(rn._priority === 8, "and the level underneath it is still 8");
+
+  const rc = new registry["priority-control-card"]();
+  rc.setConfig({ entities: ["switch.pump"], default_priority: 8 });
+  rc.hass = renamed;
+  ok(rc._controls.innerHTML.includes("2 - Burst &lt;pipe&gt;"), "control card picks up the rename");
+  ok(rc._note.textContent.startsWith("Normal:"), "and names Default by its new name");
+
+  const oc2 = new registry["priority-overrides-card"]();
+  oc2.setConfig({});
+  oc2.hass = renamed;
+  ok(oc2._body.innerHTML.includes("running at Normal"), "overrides card names Default by its new name");
+  if (oc2._timer) window.clearInterval(oc2._timer);
 
   console.log(fails ? `\n${fails} FAILURES` : "\nall card checks passed");
   process.exit(fails ? 1 : 0);

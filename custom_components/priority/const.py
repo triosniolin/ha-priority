@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Final
+from collections.abc import Mapping
+from typing import Any, Final
 
 DOMAIN: Final = "priority"
 
@@ -12,34 +13,37 @@ ATTR_PRIORITY: Final = "priority"
 # Lease in seconds; absent or 0 holds until relinquished or rewritten at the same level.
 ATTR_PRIORITY_TTL: Final = "priority_ttl"
 
-# Lower wins. Everything, automations included, lands at 5 unless the caller names a level:
+# Lower wins. Everything, automations included, lands at Default unless the caller names a level:
 # HA automations never relinquish, so a separate automation default would fill and never drain.
+# 1-4 are a public contract (stored slots, user YAML); new levels go between 4 and Default.
 PRI_MANUAL_EMERGENCY: Final = 1
 PRI_AUTO_EMERGENCY: Final = 2
 PRI_MANUAL: Final = 3
 PRI_AUTO: Final = 4
-PRI_DEFAULT: Final = 5
+PRI_OCCUPANCY: Final = 5
+PRI_PEAK_DEMAND_LIMIT: Final = 6
+PRI_SCHEDULED: Final = 7
+PRI_DEFAULT: Final = 8
 
 MIN_PRIORITY: Final = PRI_MANUAL_EMERGENCY
 MAX_PRIORITY: Final = PRI_DEFAULT
 NUM_SLOTS: Final = MAX_PRIORITY
 
+# Shipped names only; users can rename every level, so read names through the manager.
 PRIORITY_NAMES: Final[dict[int, str]] = {
     PRI_MANUAL_EMERGENCY: "Manual Emergency",
     PRI_AUTO_EMERGENCY: "Automatic Emergency",
     PRI_MANUAL: "Manual",
     PRI_AUTO: "Automatic",
+    PRI_OCCUPANCY: "Occupancy",
+    PRI_PEAK_DEMAND_LIMIT: "Peak Demand Limit",
+    PRI_SCHEDULED: "Scheduled",
     PRI_DEFAULT: "Default",
 }
 
-# Slot 5 is not stored: a saved copy would be a claim about a device that may have moved while down.
+# Default is not stored: a saved copy would claim a state the device may have left while down.
 # Restored slots suppress lower levels but are not re-driven at startup.
-PERSISTED_PRIORITIES: Final = (
-    PRI_MANUAL_EMERGENCY,
-    PRI_AUTO_EMERGENCY,
-    PRI_MANUAL,
-    PRI_AUTO,
-)
+PERSISTED_PRIORITIES: Final = tuple(range(MIN_PRIORITY, PRI_DEFAULT))
 
 STORAGE_KEY: Final = DOMAIN
 STORAGE_VERSION: Final = 1
@@ -57,8 +61,15 @@ CONF_MANAGED_AREAS: Final = "managed_areas"
 CONF_DEFAULT_USER_PRIORITY: Final = "default_user_priority"
 CONF_DEFAULT_AUTOMATION_PRIORITY: Final = "default_automation_priority"
 CONF_TRACK_OUT_OF_BAND: Final = "track_out_of_band"
+# {"1": "Burst pipe", ...}; a missing or blank entry falls back to PRIORITY_NAMES.
+CONF_PRIORITY_NAMES: Final = "priority_names"
 
-# Raising the automation default to 4 brings back the lockout described at PRI_* above.
+# Default was 5 before 0.2.0. Minor 2 drops stored defaults equal to it rather than rewriting them to
+# 8, so a rollback to 0.1.x reads its own built-in default instead of an out-of-range level.
+CONFIG_MINOR_VERSION: Final = 2
+LEGACY_PRI_DEFAULT: Final = 5
+
+# Raising the automation default above Default brings back the lockout described at PRI_* above.
 DEFAULT_USER_PRIORITY: Final = PRI_DEFAULT
 DEFAULT_AUTOMATION_PRIORITY: Final = PRI_DEFAULT
 DEFAULT_TRACK_OUT_OF_BAND: Final = True
@@ -130,3 +141,12 @@ ARBITRATED_SERVICES: Final[dict[str, frozenset[str]]] = {
     "input_boolean": frozenset({"turn_on", "turn_off", "toggle"}),
     "input_number": frozenset({"set_value"}),
 }
+
+
+def priority_names(options: Mapping[str, Any]) -> dict[int, str]:
+    """Every level's display name, the user's where set and the shipped one otherwise."""
+    custom = options.get(CONF_PRIORITY_NAMES) or {}
+    return {
+        priority: str(custom.get(str(priority)) or "").strip() or default
+        for priority, default in PRIORITY_NAMES.items()
+    }
