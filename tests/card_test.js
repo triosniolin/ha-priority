@@ -582,6 +582,19 @@ ok(
   "a slot with no lease shows no countdown"
 );
 
+// Adaptive Lighting and most integrations send raw brightness (0-255), not brightness_pct.
+r = mkRow("light.living_room", {
+  effective_priority: 4,
+  slots: {
+    "4": { domain: "light", service: "turn_on", data: { brightness: 200 }, expires_at: null },
+  },
+});
+r._paintSlots();
+ok(
+  r.shadowRoot.getElementById("slots").innerHTML.includes("ON 78%"),
+  "raw brightness is shown as a percentage"
+);
+
 console.log("\n-- command interception --");
 const internals = window.__priorityInternals;
 const SEL = internals.selections;

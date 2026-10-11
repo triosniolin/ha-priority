@@ -1071,6 +1071,8 @@ function _serviceLabel(slot) {
   const detail =
     d.brightness_pct !== undefined
       ? ` ${d.brightness_pct}%`
+      : d.brightness !== undefined
+      ? ` ${Math.round((d.brightness / 255) * 100)}%`
       : d.temperature !== undefined
       ? ` ${d.temperature}°`
       : d.position !== undefined
