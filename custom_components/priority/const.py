@@ -14,7 +14,7 @@ ATTR_PRIORITY: Final = "priority"
 ATTR_PRIORITY_TTL: Final = "priority_ttl"
 
 # Fill what the winning command leaves unset from the same service at the levels below it.
-ATTR_MERGE_DOWN: Final = "merge_down"
+ATTR_PRIORITY_MERGE: Final = "priority_merge"
 
 # Lower wins. Everything, automations included, lands at Default unless the caller names a level:
 # HA automations never relinquish, so a separate automation default would fill and never drain.
@@ -79,7 +79,7 @@ DEFAULT_USER_PRIORITY: Final = PRI_DEFAULT
 DEFAULT_AUTOMATION_PRIORITY: Final = PRI_DEFAULT
 DEFAULT_TRACK_OUT_OF_BAND: Final = True
 # Both off, so an upgrade changes nothing: an override still wins wholesale until someone opts in.
-# Disabled is a kill switch: an explicit merge_down is ignored and the UI stops offering it.
+# Disabled is a kill switch: an explicit priority_merge is ignored and the UI stops offering it.
 DEFAULT_MERGE_ENABLED: Final = False
 DEFAULT_MERGE_DOWN: Final = False
 

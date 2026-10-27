@@ -215,7 +215,7 @@ blocks every brightness and color change underneath it, so adaptive or circadian
 adjusting until the override is released. That is deliberate (an override exists so automations
 stop fighting you), but it is not always what you meant.
 
-Turn on **Enable merging with lower levels** in the options. Then pass `merge_down: true` on a call,
+Turn on **Enable merging with lower levels** in the options. Then pass `priority_merge: true` on a call,
 or turn on **Merge by default** to make it the norm, and the winning command keeps what it names for
 itself while anything it leaves unset is filled in from the same service at the levels below:
 
@@ -225,7 +225,7 @@ target:
   entity_id: light.living_room
 data:
   priority: 3
-  merge_down: true
+  priority_merge: true
 ```
 
 With adaptive lighting writing color and brightness at level 7, the light stays on at Manual and
@@ -256,7 +256,7 @@ The rules, walking down from the winner:
 - Anything not in the table above (a light's `effect`, `flash`, `profile` or relative
   `brightness_step`, for example) stops the walk; nothing at or below that level is merged. A winner
   carrying one does not merge at all.
-- A level without the flag inherits it from the level above. An explicit `merge_down: false` lower
+- A level without the flag inherits it from the level above. An explicit `priority_merge: false` lower
   down is merged in and then stops the walk.
 - If the merged command would fail the domain's own validation, the winner is sent alone.
 
@@ -265,11 +265,11 @@ toggle beside the level for any entity with a service in the table. It starts at
 setting and travels with the level you pick, so the next ordinary command carries it.
 
 When a lower level changes something the winner is taking from it, the merged command is sent again,
-so the device follows along. `merge_down: false` on a call holds the whole device the old way even
+so the device follows along. `priority_merge: false` on a call holds the whole device the old way even
 with Merge by default on.
 
 With merging disabled nothing merges, the cards drop the toggle and the action editors drop the
-field. A `merge_down` already written into an automation is ignored rather than rejected, so turning
+field. A `priority_merge` already written into an automation is ignored rather than rejected, so turning
 the feature off never breaks one.
 
 ## Using it in YAML
@@ -286,7 +286,7 @@ data:
   priority_ttl: "03:00:00"
 ```
 
-`merge_down`, described above, is the third. All three appear as real form fields in the automation
+`priority_merge`, described above, is the third. All three appear as real form fields in the automation
 editor, the script editor, Developer Tools and button tap actions, so you get a proper dropdown
 rather than having to remember the YAML. The integration rewrites the affected service descriptions
 at runtime.
@@ -317,7 +317,7 @@ data:
 | `service` | yes | The bare domain service (`turn_on`, `set_temperature`). The domain comes from the target entity. |
 | `data` | no | The payload that service would take |
 | `priority_ttl` | no | Duration. Rejected at level 8. |
-| `merge_down` | no | Overrides Merge by default for this slot. Ignored while merging is disabled. |
+| `priority_merge` | no | Overrides Merge by default for this slot. Ignored while merging is disabled. |
 
 Both the service and the payload are validated before anything is written, and every target is
 validated before any slot is written. A slot that cannot dispatch would still win arbitration and
@@ -477,7 +477,7 @@ Set at install time and changeable afterwards from the integration's **Configure
 | Default priority for automations | 8 | The same, for automations |
 | Track out-of-band changes | on | Record physical switches and vendor apps at Default |
 | Enable merging with lower levels | off | Lets an override fill in what it leaves unset from the levels below; see above |
-| Merge by default | off | Whether an override merges when it does not say `merge_down` itself |
+| Merge by default | off | Whether an override merges when it does not say `priority_merge` itself |
 | Level names | shipped names | Rename any level; see above |
 
 Changing the two default-priority options away from 8 is the one setting that can surprise you, for

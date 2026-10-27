@@ -206,13 +206,13 @@ async def test_without_the_option_the_override_takes_the_whole_light(demo_hass) 
 
 async def test_per_call_flag_and_what_the_override_names_wins(demo_hass) -> None:
     await _setup(demo_hass)
-    await _call(demo_hass, priority=PRI_MANUAL, merge_down=True, brightness=20)
+    await _call(demo_hass, priority=PRI_MANUAL, priority_merge=True, brightness=20)
     await _call(demo_hass, priority=PRI_SCHEDULED, hs_color=WARM, brightness=200)
 
     state = demo_hass.states.get(LIGHT)
     assert tuple(state.attributes["hs_color"]) == WARM
     assert state.attributes["brightness"] == 20
-    assert "merge_down" not in _light().turn_on_calls[-1]
+    assert "priority_merge" not in _light().turn_on_calls[-1]
 
 
 async def test_a_lower_write_that_changes_nothing_is_not_sent(demo_hass) -> None:
@@ -255,7 +255,7 @@ async def test_set_service_takes_the_flag(demo_hass) -> None:
     await demo_hass.services.async_call(
         DOMAIN,
         "set",
-        {"entity_id": LIGHT, "priority": PRI_MANUAL, "service": "turn_on", "merge_down": True},
+        {"entity_id": LIGHT, "priority": PRI_MANUAL, "service": "turn_on", "priority_merge": True},
         blocking=True,
     )
     await _call(demo_hass, hs_color=WARM)
@@ -265,10 +265,10 @@ async def test_set_service_takes_the_flag(demo_hass) -> None:
 async def test_every_domain_takes_the_field(demo_hass) -> None:
     await _setup(demo_hass)
     await demo_hass.services.async_call(
-        "switch", "turn_on", {"entity_id": "switch.one", "merge_down": True}, blocking=True
+        "switch", "turn_on", {"entity_id": "switch.one", "priority_merge": True}, blocking=True
     )
     await demo_hass.services.async_call(
-        "fan", "set_percentage", {"entity_id": "fan.one", "percentage": 40, "merge_down": True},
+        "fan", "set_percentage", {"entity_id": "fan.one", "percentage": 40, "priority_merge": True},
         blocking=True,
     )
     assert demo_hass.states.get("switch.one").state == "on"
@@ -422,7 +422,7 @@ async def test_group_members_inherit_the_flag(demo_hass) -> None:
     await demo_hass.services.async_call(
         "light",
         "turn_on",
-        {"entity_id": "light.room", "priority": PRI_MANUAL, "merge_down": True},
+        {"entity_id": "light.room", "priority": PRI_MANUAL, "priority_merge": True},
         blocking=True,
     )
     await demo_hass.async_block_till_done()
@@ -433,11 +433,19 @@ async def test_group_members_inherit_the_flag(demo_hass) -> None:
     assert tuple(demo_hass.states.get(LIGHT).attributes["hs_color"]) == WARM
 
 
+async def test_enabled_offers_the_field_in_the_action_editor(demo_hass) -> None:
+    from homeassistant.helpers.service import async_get_all_descriptions
+
+    await _setup(demo_hass)
+    fields = (await async_get_all_descriptions(demo_hass))["light"]["turn_on"]["fields"]
+    assert "priority_merge" in fields
+
+
 async def test_disabled_is_a_kill_switch(demo_hass) -> None:
     from homeassistant.helpers.service import async_get_all_descriptions
 
     await _setup(demo_hass, **{CONF_MERGE_ENABLED: False, CONF_MERGE_DOWN: True})
-    await _call(demo_hass, priority=PRI_MANUAL, merge_down=True)
+    await _call(demo_hass, priority=PRI_MANUAL, priority_merge=True)
     await _call(demo_hass, hs_color=WARM)
     assert demo_hass.states.get(LIGHT).attributes["hs_color"] is None
 
@@ -445,7 +453,7 @@ async def test_disabled_is_a_kill_switch(demo_hass) -> None:
     assert attrs["merge_services"] == {}
     fields = (await async_get_all_descriptions(demo_hass))["light"]["turn_on"]["fields"]
     assert "priority" in fields
-    assert "merge_down" not in fields
+    assert "priority_merge" not in fields
 
 
 async def test_the_sensor_tells_the_cards_what_can_merge(demo_hass) -> None:

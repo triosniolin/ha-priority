@@ -932,11 +932,11 @@ setTimeout(() => {
   ok(mbtn.disabled === false, "picking a level enables it");
   calls.length = 0;
   mh.callService("light", "turn_on", { entity_id: "light.living_room" });
-  ok(calls[0].data.priority === 3 && calls[0].data.merge_down === false, "an armed row sends the option's value");
+  ok(calls[0].data.priority === 3 && calls[0].data.priority_merge === false, "an armed row sends the option's value");
   mbtn.onclick();
   calls.length = 0;
   mh.callService("light", "turn_on", { entity_id: "light.living_room" });
-  ok(calls[0].data.merge_down === true, "tapping the toggle flips merge_down");
+  ok(calls[0].data.priority_merge === true, "tapping the toggle flips priority_merge");
   ok(
     mr.shadowRoot.getElementById("hint").textContent.includes("filling unset settings"),
     "and the hint says so"
@@ -958,8 +958,8 @@ setTimeout(() => {
   calls.length = 0;
   mh.callService("switch", "turn_on", { entity_id: "switch.pump" });
   ok(
-    calls[0].data.priority === 3 && calls[0].data.merge_down === undefined,
-    "and no merge_down is sent for it"
+    calls[0].data.priority === 3 && calls[0].data.priority_merge === undefined,
+    "and no priority_merge is sent for it"
   );
   sr._disarm();
 
@@ -969,11 +969,11 @@ setTimeout(() => {
   ok(mc._controls.innerHTML.includes("data-merge"), "control card offers the toggle for a light");
   calls.length = 0;
   mc._command("light.living_room", "on");
-  ok(calls[0].data.merge_down === false, "control card sends the option's value");
+  ok(calls[0].data.priority_merge === false, "control card sends the option's value");
   mc._controls.querySelector("[data-merge]").onclick();
   calls.length = 0;
   mc._command("light.living_room", "on");
-  ok(calls[0].data.merge_down === true, "and the toggled value once tapped");
+  ok(calls[0].data.priority_merge === true, "and the toggled value once tapped");
   const sc = new registry["priority-control-card"]();
   sc.setConfig({ entities: ["switch.pump"], default_priority: 3 });
   sc.hass = mh;

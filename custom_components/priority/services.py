@@ -21,8 +21,8 @@ from homeassistant.helpers import target as target_helpers
 
 from .const import (
     ARBITRATED_SERVICES,
-    ATTR_MERGE_DOWN,
     ATTR_PRIORITY,
+    ATTR_PRIORITY_MERGE,
     ATTR_PRIORITY_TTL,
     DOMAIN,
     MAX_PRIORITY,
@@ -53,7 +53,7 @@ SET_SCHEMA = cv.make_entity_service_schema(
         vol.Required("service"): cv.string,
         vol.Optional("data", default=dict): dict,
         vol.Optional(ATTR_PRIORITY_TTL): _TTL,
-        vol.Optional(ATTR_MERGE_DOWN): cv.boolean,
+        vol.Optional(ATTR_PRIORITY_MERGE): cv.boolean,
     }
 )
 GET_SCHEMA = cv.make_entity_service_schema({})
@@ -187,7 +187,7 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
                 data,
                 call.context,
                 ttl,
-                merge_down=call.data.get(ATTR_MERGE_DOWN),
+                merge_down=call.data.get(ATTR_PRIORITY_MERGE),
             )
             manager.async_write_slot(entity_id, priority, slot)
             manager.async_notify(entity_id)

@@ -692,7 +692,7 @@ const pick = (id) => `#${id}`;
   ok((await page.getAttribute("#m", "aria-pressed")) === "true", "a real click turns it on");
   await page.evaluate(`window.__row.hass.callService("light", "turn_on", { entity_id: "light.porch" })`);
   const sent = await page.evaluate("window.__calls[window.__calls.length - 1].data");
-  ok(sent.priority === 3 && sent.merge_down === true, `the next command carries it: ${JSON.stringify(sent)}`);
+  ok(sent.priority === 3 && sent.priority_merge === true, `the next command carries it: ${JSON.stringify(sent)}`);
 
   await mergeRow(230, true);
   const fit = await page.evaluate(() => {

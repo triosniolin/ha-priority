@@ -1,4 +1,4 @@
-"""Per-attribute merging (issue #5): a `merge_down` winner fills its gaps from below.
+"""Per-attribute merging (issue #5): a `priority_merge` winner fills its gaps from below.
 
 Only between levels holding the same service, since the result must still be one call. The winner
 keeps its own fields; below it, each attribute group comes from the highest live slot that names

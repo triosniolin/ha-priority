@@ -29,8 +29,8 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     ARBITRATED_SERVICES,
-    ATTR_MERGE_DOWN,
     ATTR_PRIORITY,
+    ATTR_PRIORITY_MERGE,
     ATTR_PRIORITY_TTL,
     MAX_PRIORITY,
     MIN_PRIORITY,
@@ -47,7 +47,7 @@ _RAW_KEY = "__priority_raw"
 
 # Every field we add; each must be stripped before the original sees the call, or it arrives as a
 # kwarg (fan.set_percentage raises on one).
-_OUR_FIELDS = frozenset({ATTR_PRIORITY, ATTR_PRIORITY_TTL, ATTR_MERGE_DOWN, _RAW_KEY})
+_OUR_FIELDS = frozenset({ATTR_PRIORITY, ATTR_PRIORITY_TTL, ATTR_PRIORITY_MERGE, _RAW_KEY})
 
 _TARGET_FIELDS = _OUR_FIELDS | {
     ATTR_ENTITY_ID, "device_id", "area_id", "floor_id", "label_id", "metadata"
@@ -60,7 +60,7 @@ PRIORITY_FIELD: dict[Any, Any] = {
     vol.Optional(ATTR_PRIORITY_TTL): vol.Any(
         cv.positive_time_period, vol.All(vol.Coerce(float), vol.Range(min=0))
     ),
-    vol.Optional(ATTR_MERGE_DOWN): cv.boolean,
+    vol.Optional(ATTR_PRIORITY_MERGE): cv.boolean,
 }
 
 
@@ -97,7 +97,7 @@ def _extend_schema(schema: Any) -> Any:
         validated[_RAW_KEY] = rest
         if ATTR_PRIORITY in checked:
             validated[ATTR_PRIORITY] = int(checked[ATTR_PRIORITY])
-        for key in (ATTR_PRIORITY_TTL, ATTR_MERGE_DOWN):
+        for key in (ATTR_PRIORITY_TTL, ATTR_PRIORITY_MERGE):
             if key in checked:
                 validated[key] = checked[key]
         return validated
@@ -193,7 +193,7 @@ def _build_wrapper(
 
         ttl = _ttl_seconds(call.data.get(ATTR_PRIORITY_TTL))
         expires_at = dt_util.utcnow() + timedelta(seconds=ttl) if ttl else None
-        merge_down = call.data.get(ATTR_MERGE_DOWN)
+        merge_down = call.data.get(ATTR_PRIORITY_MERGE)
         if ATTR_PRIORITY in call.data:
             priority = call.data[ATTR_PRIORITY]
         elif (inherited := async_inherited(call.context)) is not None:

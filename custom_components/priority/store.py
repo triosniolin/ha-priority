@@ -36,8 +36,8 @@ from .array import PriorityArray, Slot
 from .commands import resolve_toggle
 from .const import (
     ARBITRATED_SERVICES,
-    ATTR_MERGE_DOWN,
     ATTR_PRIORITY,
+    ATTR_PRIORITY_MERGE,
     ATTR_PRIORITY_TTL,
     CONF_DEFAULT_AUTOMATION_PRIORITY,
     CONF_DEFAULT_USER_PRIORITY,
@@ -111,7 +111,7 @@ _NON_COMMAND_FIELDS = frozenset(
         ATTR_ENTITY_ID,
         ATTR_PRIORITY,
         ATTR_PRIORITY_TTL,
-        ATTR_MERGE_DOWN,
+        ATTR_PRIORITY_MERGE,
         "device_id",
         "area_id",
         "floor_id",

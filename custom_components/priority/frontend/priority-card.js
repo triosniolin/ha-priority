@@ -419,7 +419,7 @@ class PriorityControlCard extends HTMLElement {
     if (this._ttl > 0 && this._priority < LEVELS.max) {
       data.priority_ttl = this._ttl;
     }
-    if (this._showsMerge() && this._priority < LEVELS.max) data.merge_down = this._mergeOn();
+    if (this._showsMerge() && this._priority < LEVELS.max) data.priority_merge = this._mergeOn();
     this._hass.callService(domain, which === "on" ? acts.on : acts.off, data);
   }
 
@@ -896,7 +896,7 @@ function _wrapCallService(hass) {
         if (sel && ids.every((id) => same(SELECTIONS.get(id)))) {
           data = { ...(data || {}), priority: sel.priority };
           if (sel.ttl > 0 && sel.priority < LEVELS.max) data.priority_ttl = sel.ttl;
-          if (typeof sel.merge === "boolean") data.merge_down = sel.merge;
+          if (typeof sel.merge === "boolean") data.priority_merge = sel.merge;
         }
       }
     } catch (err) {

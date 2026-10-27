@@ -42,7 +42,7 @@ set:
       example: "00:30:00"
       selector:
         duration:
-    merge_down:
+    priority_merge:
       required: false
       example: true
       selector:

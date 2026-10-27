@@ -19,8 +19,8 @@ from homeassistant.helpers.service import (
 )
 
 from .const import (
-    ATTR_MERGE_DOWN,
     ATTR_PRIORITY,
+    ATTR_PRIORITY_MERGE,
     ATTR_PRIORITY_TTL,
     MAX_PRIORITY,
     MIN_PRIORITY,
@@ -69,7 +69,7 @@ def _priority_fields(names: dict[int, str]) -> dict[str, Any]:
 
 
 _MERGE_FIELD: dict[str, Any] = {
-    ATTR_MERGE_DOWN: {
+    ATTR_PRIORITY_MERGE: {
         "name": "Merge down",
         "description": (
             "Fill in what this command leaves unset (a light's color or brightness, a "
