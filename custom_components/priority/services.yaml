@@ -42,6 +42,11 @@ set:
       example: "00:30:00"
       selector:
         duration:
+    merge_down:
+      required: false
+      example: true
+      selector:
+        boolean:
 
 get:
   target:

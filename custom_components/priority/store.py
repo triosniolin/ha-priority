@@ -13,7 +13,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 import voluptuous as vol
 from homeassistant.const import ATTR_ENTITY_ID, EVENT_LOGBOOK_ENTRY, SERVICE_TOGGLE
@@ -36,6 +36,7 @@ from .array import PriorityArray, Slot
 from .commands import resolve_toggle
 from .const import (
     ARBITRATED_SERVICES,
+    ATTR_MERGE_DOWN,
     ATTR_PRIORITY,
     ATTR_PRIORITY_TTL,
     CONF_DEFAULT_AUTOMATION_PRIORITY,
@@ -44,11 +45,15 @@ from .const import (
     CONF_MANAGED_AREAS,
     CONF_MANAGED_ENTITIES,
     CONF_MANAGED_LABELS,
+    CONF_MERGE_DOWN,
+    CONF_MERGE_ENABLED,
     CONF_SCOPE,
     CONF_TRACK_OUT_OF_BAND,
     CONTEXT_MAP_MAX_ENTRIES,
     CONTEXT_TTL_SECONDS,
     DEFAULT_AUTOMATION_PRIORITY,
+    DEFAULT_MERGE_DOWN,
+    DEFAULT_MERGE_ENABLED,
     DEFAULT_SCOPE,
     DEFAULT_TRACK_OUT_OF_BAND,
     DEFAULT_USER_PRIORITY,
@@ -61,25 +66,26 @@ from .const import (
     STORAGE_VERSION,
     priority_names,
 )
+from .merge import merged_data
 
 _LOGGER = logging.getLogger(__name__)
 
 SAVE_DELAY = 10
 
-# (context id, priority, expires_at) of the command being driven, inherited by a group's member call
+# (context id, priority, expires_at, merge_down) being driven, inherited by a group's member call
 # (issue #2). Not the context map: a script reuses one context for every step.
-_DRIVING: ContextVar[tuple[str, int, datetime | None] | None] = ContextVar(
+_DRIVING: ContextVar[tuple[str, int, datetime | None, bool | None] | None] = ContextVar(
     "priority_driving", default=None
 )
 
 
 @callback
-def async_inherited(context: Context) -> tuple[int, datetime | None] | None:
-    """Priority and lease for a call made from inside one of our dispatches."""
+def async_inherited(context: Context) -> tuple[int, datetime | None, bool | None] | None:
+    """Priority, lease and merge flag for a call made from inside one of our dispatches."""
     driving = _DRIVING.get()
     if driving is None or driving[0] != context.id:
         return None
-    return driving[1], driving[2]
+    return driving[1:]
 
 
 async def async_run_original(
@@ -88,9 +94,10 @@ async def async_run_original(
     call: ServiceCall,
     priority: int,
     expires_at: datetime | None,
+    merge_down: bool | None = None,
 ) -> Any:
     """Run a pre-wrap handler so anything it calls on the same context inherits the command."""
-    token = _DRIVING.set((call.context.id, priority, expires_at))
+    token = _DRIVING.set((call.context.id, priority, expires_at, merge_down))
     try:
         # Tasks copy the current contextvars when created, so the set must span this call.
         task = hass.async_run_hass_job(job, call)
@@ -104,6 +111,7 @@ _NON_COMMAND_FIELDS = frozenset(
         ATTR_ENTITY_ID,
         ATTR_PRIORITY,
         ATTR_PRIORITY_TTL,
+        ATTR_MERGE_DOWN,
         "device_id",
         "area_id",
         "floor_id",
@@ -111,6 +119,17 @@ _NON_COMMAND_FIELDS = frozenset(
         "metadata",
     }
 )
+
+
+class Command(NamedTuple):
+    """What the array drives right now: the winner, with any merged attributes."""
+
+    priority: int
+    domain: str
+    service: str
+    data: dict[str, Any]
+    expires_at: datetime | None
+    merge_down: bool | None
 
 
 class PriorityManager:
@@ -161,12 +180,14 @@ class PriorityManager:
 
     @callback
     def async_update_options(self, options: dict[str, Any]) -> None:
+        was_merging = (self.merge_enabled, self.merge_down)
         self._options = dict(options)
         names = priority_names(self._options)
-        renamed = names != self._names
+        # The sensor, the cards and the action forms all show these, so any change has to reach them.
+        presented = names != self._names or (self.merge_enabled, self.merge_down) != was_merging
         self._names = names
         self._managed_cache = None
-        if renamed:
+        if presented:
             for listener in list(self._names_listeners):
                 listener()
 
@@ -175,6 +196,14 @@ class PriorityManager:
         return self._options.get(
             CONF_TRACK_OUT_OF_BAND, DEFAULT_TRACK_OUT_OF_BAND
         )
+
+    @property
+    def merge_enabled(self) -> bool:
+        return bool(self._options.get(CONF_MERGE_ENABLED, DEFAULT_MERGE_ENABLED))
+
+    @property
+    def merge_down(self) -> bool:
+        return bool(self._options.get(CONF_MERGE_DOWN, DEFAULT_MERGE_DOWN))
 
     @callback
     def async_invalidate_managed_cache(self) -> None:
@@ -486,6 +515,7 @@ class PriorityManager:
         context: Context,
         ttl: float | None = None,
         expires_at: datetime | None = None,
+        merge_down: bool | None = None,
     ) -> Slot:
         if ttl:
             expires_at = dt_util.utcnow() + timedelta(seconds=float(ttl))
@@ -500,6 +530,7 @@ class PriorityManager:
             written_at=dt_util.utcnow(),
             written_by=self.async_attribute(context),
             expires_at=expires_at,
+            merge_down=merge_down,
         )
 
     # ---- Expiry timers ----
@@ -537,6 +568,10 @@ class PriorityManager:
                 # Rewritten since the timer was armed; that write armed its own.
                 return
             was_in_control = current.lowest_occupied() == priority
+            # Just before the lease ran out, while the slot still counted.
+            before = self.async_command(
+                entity_id, slot.expires_at - timedelta(microseconds=1)
+            )
             current.clear(priority)
             self.async_notify(entity_id)
             _LOGGER.debug(
@@ -552,11 +587,12 @@ class PriorityManager:
                     else ", no longer under priority control"
                 ),
             )
-            if was_in_control:
-                self.hass.async_create_task(
-                    self.async_drive_effective(entity_id),
-                    f"priority expiry redrive {entity_id}",
-                )
+            self.hass.async_create_task(
+                self.async_drive_effective(entity_id)
+                if was_in_control
+                else self.async_drive_if_changed(entity_id, before),
+                f"priority expiry redrive {entity_id}",
+            )
 
         self._timers[(entity_id, priority)] = async_track_point_in_utc_time(
             self.hass, _expired, slot.expires_at
@@ -590,6 +626,7 @@ class PriorityManager:
         priority: int,
         context: Context | None = None,
         expires_at: datetime | None = None,
+        merge_down: bool | None = None,
     ) -> None:
         """Drive entities through the pre-wrap handler, never re-entering our wrapper."""
         targets = list(entity_ids)
@@ -644,26 +681,67 @@ class PriorityManager:
         )
 
         await async_run_original(
-            self.hass, original.job, service_call, priority, expires_at
+            self.hass, original.job, service_call, priority, expires_at, merge_down
         )
+
+    @callback
+    def async_command(
+        self, entity_id: str, now: datetime | None = None
+    ) -> Command | None:
+        array = self.async_peek_array(entity_id)
+        if array is None or (winner := array.effective(now)) is None:
+            return None
+        priority, slot = winner
+        data = (
+            merged_data(slot, array.below(priority, now), self.merge_down)
+            if self.merge_enabled
+            else None
+        )
+        if data is not None and not self._dispatchable(slot, entity_id, data):
+            data = None
+        return Command(
+            priority,
+            slot.domain,
+            slot.service,
+            slot.data if data is None else data,
+            slot.expires_at,
+            slot.merge_down,
+        )
+
+    @callback
+    def _dispatchable(self, slot: Slot, entity_id: str, data: dict[str, Any]) -> bool:
+        """A merge the schema refuses would make dispatch clear the winner; drive it unmerged."""
+        try:
+            self.async_validate_command(slot.domain, slot.service, entity_id, data)
+        except ServiceValidationError:
+            _LOGGER.debug("Priority merge for %s rejected, sending the winner alone", entity_id)
+            return False
+        return True
 
     async def async_drive_effective(
         self, entity_id: str, context: Context | None = None
     ) -> None:
         """Re-issue the winning command; an empty array leaves the device alone."""
-        array = self.async_peek_array(entity_id)
-        if array is None or (winner := array.effective()) is None:
+        if (command := self.async_command(entity_id)) is None:
             return
-        priority, slot = winner
         await self.async_dispatch(
-            slot.domain,
-            slot.service,
+            command.domain,
+            command.service,
             [entity_id],
-            slot.data,
-            priority,
+            command.data,
+            command.priority,
             context,
-            slot.expires_at,
+            command.expires_at,
+            command.merge_down,
         )
+
+    async def async_drive_if_changed(
+        self, entity_id: str, before: Command | None, context: Context | None = None
+    ) -> None:
+        """A level below the winner can still change a merged command."""
+        after = self.async_command(entity_id)
+        if after is not None and after != before:
+            await self.async_drive_effective(entity_id, context)
 
     # ---- Persistence ----
 

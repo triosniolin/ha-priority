@@ -10,6 +10,7 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import MIN_PRIORITY, PRI_DEFAULT
+from .merge import MERGE_SERVICES
 
 if TYPE_CHECKING:
     from . import PriorityConfigEntry
@@ -67,6 +68,9 @@ class PriorityOverrideSensor(SensorEntity):
                 str(priority): name
                 for priority, name in self._manager.priority_names.items()
             },
+            # The cards offer their merge toggle only where this lists a service, starting at the option.
+            "merge_down": self._manager.merge_down,
+            "merge_services": MERGE_SERVICES if self._manager.merge_enabled else {},
         }
 
     def _overrides(self) -> dict[str, Any]:

@@ -23,11 +23,15 @@ from .const import (
     CONF_MANAGED_AREAS,
     CONF_MANAGED_ENTITIES,
     CONF_MANAGED_LABELS,
+    CONF_MERGE_DOWN,
+    CONF_MERGE_ENABLED,
     CONF_PRIORITY_NAMES,
     CONF_SCOPE,
     CONF_TRACK_OUT_OF_BAND,
     CONFIG_MINOR_VERSION,
     DEFAULT_AUTOMATION_PRIORITY,
+    DEFAULT_MERGE_DOWN,
+    DEFAULT_MERGE_ENABLED,
     DEFAULT_SCOPE,
     DEFAULT_TRACK_OUT_OF_BAND,
     DEFAULT_USER_PRIORITY,
@@ -119,6 +123,14 @@ def _options_schema(current: dict[str, Any]) -> vol.Schema:
                     CONF_TRACK_OUT_OF_BAND, DEFAULT_TRACK_OUT_OF_BAND
                 ),
             ): selector.BooleanSelector(),
+            vol.Required(
+                CONF_MERGE_ENABLED,
+                default=current.get(CONF_MERGE_ENABLED, DEFAULT_MERGE_ENABLED),
+            ): selector.BooleanSelector(),
+            vol.Required(
+                CONF_MERGE_DOWN,
+                default=current.get(CONF_MERGE_DOWN, DEFAULT_MERGE_DOWN),
+            ): selector.BooleanSelector(),
             vol.Required(CONF_PRIORITY_NAMES): section(
                 vol.Schema(
                     {
@@ -138,7 +150,7 @@ def _options_schema(current: dict[str, Any]) -> vol.Schema:
 
 
 def _coerce(user_input: dict[str, Any]) -> dict[str, Any]:
-    """Selector strings back to ints; Default and shipped names are left unstored.
+    """Selector strings back to ints; defaults and shipped names are left unstored.
 
     Leaving them out keeps a rollback to 0.1.x safe: it reads its own default instead of a level 8
     it has no slot for.
@@ -149,6 +161,12 @@ def _coerce(user_input: dict[str, Any]) -> dict[str, Any]:
             options[key] = int(options[key])
             if options[key] == PRI_DEFAULT:
                 del options[key]
+    for key, default in (
+        (CONF_MERGE_ENABLED, DEFAULT_MERGE_ENABLED),
+        (CONF_MERGE_DOWN, DEFAULT_MERGE_DOWN),
+    ):
+        if options.get(key, default) == default:
+            options.pop(key, None)
 
     raw_names = options.pop(CONF_PRIORITY_NAMES, None) or {}
     custom: dict[str, str] = {}

@@ -1,8 +1,8 @@
 """The priority array: one slot per level, lowest-numbered occupied slot drives the device.
 
 A slot holds a whole service call, not a BACnet value, because HA entities are multi-property
-(`light.turn_on` carries brightness and colour together). That keeps it domain-agnostic at the
-cost of per-attribute blending; the per-slot `data` dict leaves room for that without a migration.
+(`light.turn_on` carries brightness and colour together). Lights can opt into per-attribute
+blending on top of that; see merge.py.
 """
 
 from __future__ import annotations
@@ -36,6 +36,8 @@ class Slot:
     written_by: str | None = None
     # None holds until relinquished.
     expires_at: datetime | None = None
+    # None defers to the option; stored only when set, so older versions read it as unset.
+    merge_down: bool | None = None
 
     def is_expired(self, now: datetime | None = None) -> bool:
         if self.expires_at is None:
@@ -43,7 +45,7 @@ class Slot:
         return (now or dt_util.utcnow()) >= self.expires_at
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        raw = {
             "domain": self.domain,
             "service": self.service,
             "data": self.data,
@@ -53,6 +55,9 @@ class Slot:
                 None if self.expires_at is None else self.expires_at.isoformat()
             ),
         }
+        if self.merge_down is not None:
+            raw["merge_down"] = self.merge_down
+        return raw
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Self | None:
@@ -72,6 +77,11 @@ class Slot:
                 written_at=written_at,
                 written_by=raw.get("written_by"),
                 expires_at=expires_at,
+                merge_down=(
+                    merge_down
+                    if isinstance(merge_down := raw.get("merge_down"), bool)
+                    else None
+                ),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -129,6 +139,14 @@ class PriorityArray:
                 self.slots[index] = None
                 cleared.append(index + MIN_PRIORITY)
         return cleared
+
+    def below(self, priority: int, now: datetime | None = None) -> list[Slot]:
+        """Live slots under ``priority``, highest first."""
+        return [
+            slot
+            for slot in self.slots[_slot_index(priority) + 1 :]
+            if slot is not None and not slot.is_expired(now)
+        ]
 
     def effective_priority(self) -> int | None:
         winner = self.effective()

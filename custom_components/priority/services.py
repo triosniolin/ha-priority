@@ -21,6 +21,7 @@ from homeassistant.helpers import target as target_helpers
 
 from .const import (
     ARBITRATED_SERVICES,
+    ATTR_MERGE_DOWN,
     ATTR_PRIORITY,
     ATTR_PRIORITY_TTL,
     DOMAIN,
@@ -52,6 +53,7 @@ SET_SCHEMA = cv.make_entity_service_schema(
         vol.Required("service"): cv.string,
         vol.Optional("data", default=dict): dict,
         vol.Optional(ATTR_PRIORITY_TTL): _TTL,
+        vol.Optional(ATTR_MERGE_DOWN): cv.boolean,
     }
 )
 GET_SCHEMA = cv.make_entity_service_schema({})
@@ -98,6 +100,7 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
             if array is None:
                 continue
             was_in_control = array.effective_priority() == priority
+            before = manager.async_command(entity_id)
             if not array.clear(priority):
                 continue
             manager.async_cancel_timer(entity_id, priority)
@@ -117,6 +120,8 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
             if was_in_control:
                 # Drives the captured original, never the wrapper: exactly one dispatch.
                 await manager.async_drive_effective(entity_id, call.context)
+            else:
+                await manager.async_drive_if_changed(entity_id, before, call.context)
 
     async def _relinquish_all(call: ServiceCall) -> None:
         """Clear every slot above Default and re-drive what is left."""
@@ -175,19 +180,21 @@ def async_register_services(hass: HomeAssistant, manager: PriorityManager) -> No
             resolved = manager.async_resolve_service(domain, service, entity_id)
             array = manager.async_get_array(entity_id)
             takes_control = array.wins(priority)
-            slot = manager.async_make_slot(domain, resolved, data, call.context, ttl)
+            before = manager.async_command(entity_id)
+            slot = manager.async_make_slot(
+                domain,
+                resolved,
+                data,
+                call.context,
+                ttl,
+                merge_down=call.data.get(ATTR_MERGE_DOWN),
+            )
             manager.async_write_slot(entity_id, priority, slot)
             manager.async_notify(entity_id)
             if takes_control:
-                await manager.async_dispatch(
-                    domain,
-                    resolved,
-                    [entity_id],
-                    data,
-                    priority,
-                    call.context,
-                    slot.expires_at,
-                )
+                await manager.async_drive_effective(entity_id, call.context)
+            else:
+                await manager.async_drive_if_changed(entity_id, before, call.context)
 
     async def _get(call: ServiceCall) -> ServiceResponse:
         """Return the full array for each target, for templates and debugging."""

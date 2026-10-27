@@ -13,6 +13,9 @@ ATTR_PRIORITY: Final = "priority"
 # Lease in seconds; absent or 0 holds until relinquished or rewritten at the same level.
 ATTR_PRIORITY_TTL: Final = "priority_ttl"
 
+# Fill what the winning command leaves unset from the same service at the levels below it.
+ATTR_MERGE_DOWN: Final = "merge_down"
+
 # Lower wins. Everything, automations included, lands at Default unless the caller names a level:
 # HA automations never relinquish, so a separate automation default would fill and never drain.
 # 1-4 are a public contract (stored slots, user YAML); new levels go between 4 and Default.
@@ -61,6 +64,8 @@ CONF_MANAGED_AREAS: Final = "managed_areas"
 CONF_DEFAULT_USER_PRIORITY: Final = "default_user_priority"
 CONF_DEFAULT_AUTOMATION_PRIORITY: Final = "default_automation_priority"
 CONF_TRACK_OUT_OF_BAND: Final = "track_out_of_band"
+CONF_MERGE_ENABLED: Final = "merge_enabled"
+CONF_MERGE_DOWN: Final = "merge_down"
 # {"1": "Burst pipe", ...}; a missing or blank entry falls back to PRIORITY_NAMES.
 CONF_PRIORITY_NAMES: Final = "priority_names"
 
@@ -73,6 +78,10 @@ LEGACY_PRI_DEFAULT: Final = 5
 DEFAULT_USER_PRIORITY: Final = PRI_DEFAULT
 DEFAULT_AUTOMATION_PRIORITY: Final = PRI_DEFAULT
 DEFAULT_TRACK_OUT_OF_BAND: Final = True
+# Both off, so an upgrade changes nothing: an override still wins wholesale until someone opts in.
+# Disabled is a kill switch: an explicit merge_down is ignored and the UI stops offering it.
+DEFAULT_MERGE_ENABLED: Final = False
+DEFAULT_MERGE_DOWN: Final = False
 
 SERVICE_RELINQUISH: Final = "relinquish"
 SERVICE_RELINQUISH_ALL: Final = "relinquish_all"

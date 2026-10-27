@@ -19,6 +19,7 @@ from homeassistant.helpers.service import (
 )
 
 from .const import (
+    ATTR_MERGE_DOWN,
     ATTR_PRIORITY,
     ATTR_PRIORITY_TTL,
     MAX_PRIORITY,
@@ -67,6 +68,21 @@ def _priority_fields(names: dict[int, str]) -> dict[str, Any]:
     }
 
 
+_MERGE_FIELD: dict[str, Any] = {
+    ATTR_MERGE_DOWN: {
+        "name": "Merge down",
+        "description": (
+            "Fill in what this command leaves unset (a light's color or brightness, a "
+            "thermostat's mode) from the levels below it, so they keep adjusting the device. "
+            "Leave unset to use the integration option."
+        ),
+        "required": False,
+        "example": True,
+        "selector": {"boolean": {}},
+    }
+}
+
+
 async def async_patch_descriptions(
     hass: HomeAssistant, manager: PriorityManager, *, retry: bool = True
 ) -> None:
@@ -111,6 +127,8 @@ async def async_patch_descriptions(
         updated = copy.deepcopy(original)
         updated.setdefault("fields", {})
         updated["fields"].update(copy.deepcopy(fields))
+        if manager.merge_enabled:
+            updated["fields"].update(copy.deepcopy(_MERGE_FIELD))
         async_set_service_schema(hass, domain, service, updated)
         patched += 1
 

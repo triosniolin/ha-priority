@@ -113,6 +113,7 @@ global.customElements = {
     registry[n] = c;
     made.push(n);
   },
+  get: (n) => registry[n],
 };
 // In a browser window.customElements is the bare global; the more-info patch checks the former.
 global.window.customElements = global.customElements;
@@ -905,6 +906,95 @@ setTimeout(() => {
   ok(oc2._body.innerHTML.includes("running at Normal"), "overrides card names Default by its new name");
   if (oc2._timer) window.clearInterval(oc2._timer);
 
-  console.log(fails ? `\n${fails} FAILURES` : "\nall card checks passed");
-  process.exit(fails ? 1 : 0);
+  // The merge toggle: offered where a service can merge, armed with the level, off at Default.
+  const base = hass.states["sensor.active_overrides"];
+  const mergeSensor = (on) => ({
+    ...base,
+    attributes: {
+      ...base.attributes,
+      merge_down: on,
+      merge_services: { light: ["turn_on"], fan: ["turn_on"] },
+    },
+  });
+  const mh = {
+    states: { ...hass.states, "sensor.active_overrides": mergeSensor(false) },
+    callService: (d, s, data) => calls.push({ d, s, data }),
+  };
+  SEL.clear();
+  const mr = mkRow("light.living_room");
+  mr.hass = mh;
+  const mbtn = mr.shadowRoot.getElementById("m");
+  ok(mbtn && mbtn.hidden === false, "merge toggle shows for a light");
+  ok(mbtn.disabled === true, "and is disabled until a level is picked");
+  mr._priority = 3;
+  mr._select(3, 0);
+  mr._paintStatus();
+  ok(mbtn.disabled === false, "picking a level enables it");
+  calls.length = 0;
+  mh.callService("light", "turn_on", { entity_id: "light.living_room" });
+  ok(calls[0].data.priority === 3 && calls[0].data.merge_down === false, "an armed row sends the option's value");
+  mbtn.onclick();
+  calls.length = 0;
+  mh.callService("light", "turn_on", { entity_id: "light.living_room" });
+  ok(calls[0].data.merge_down === true, "tapping the toggle flips merge_down");
+  ok(
+    mr.shadowRoot.getElementById("hint").textContent.includes("filling unset settings"),
+    "and the hint says so"
+  );
+
+  const fresh = mkRow("light.living_room");
+  fresh.hass = { ...mh, states: { ...mh.states, "sensor.active_overrides": mergeSensor(true) } };
+  fresh._priority = 3;
+  fresh._select(3, 0);
+  ok(SEL.get("light.living_room").merge === true, "an untouched toggle follows the option");
+  fresh._disarm();
+  mr._disarm();
+
+  const sr = mkRow("switch.pump");
+  sr.hass = mh;
+  ok(sr.shadowRoot.getElementById("m").hidden === true, "no toggle where nothing can merge");
+  sr._priority = 3;
+  sr._select(3, 0);
+  calls.length = 0;
+  mh.callService("switch", "turn_on", { entity_id: "switch.pump" });
+  ok(
+    calls[0].data.priority === 3 && calls[0].data.merge_down === undefined,
+    "and no merge_down is sent for it"
+  );
+  sr._disarm();
+
+  const mc = new registry["priority-control-card"]();
+  mc.setConfig({ entities: ["light.living_room"], default_priority: 3 });
+  mc.hass = mh;
+  ok(mc._controls.innerHTML.includes("data-merge"), "control card offers the toggle for a light");
+  calls.length = 0;
+  mc._command("light.living_room", "on");
+  ok(calls[0].data.merge_down === false, "control card sends the option's value");
+  mc._controls.querySelector("[data-merge]").onclick();
+  calls.length = 0;
+  mc._command("light.living_room", "on");
+  ok(calls[0].data.merge_down === true, "and the toggled value once tapped");
+  const sc = new registry["priority-control-card"]();
+  sc.setConfig({ entities: ["switch.pump"], default_priority: 3 });
+  sc.hass = mh;
+  ok(!sc._controls.innerHTML.includes("data-merge"), "no toggle on a card with nothing that merges");
+
+  // HA 2026.10 replaces window.customElements with a scoped-registry polyfill after we load.
+  const swapped = {};
+  global.window.customElements = {
+    define: (n, c) => {
+      swapped[n] = c;
+    },
+    get: (n) => swapped[n],
+  };
+  setTimeout(() => {
+    ok(
+      ["priority-overrides-card", "priority-control-card", "priority-row", "priority-feature"].every(
+        (tag) => swapped[tag] === registry[tag]
+      ),
+      "every element is registered again with a registry swapped in later"
+    );
+    console.log(fails ? `\n${fails} FAILURES` : "\nall card checks passed");
+    process.exit(fails ? 1 : 0);
+  }, 150);
 }, 10);

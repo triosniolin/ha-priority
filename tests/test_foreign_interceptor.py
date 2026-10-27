@@ -80,7 +80,7 @@ async def test_a_registry_update_does_not_rewrap_under_the_proxy(
 async def test_unloading_under_a_proxy_leaves_a_pass_through(
     demo_hass, priority_entry, caplog
 ) -> None:
-    """The orphaned wrapper raised "lost the original handler" on every call."""
+    """We wrap over the proxy, so unloading puts the proxy back on top of a pass-through."""
     _install_proxy(demo_hass, "light", "turn_on")
     assert await demo_hass.config_entries.async_unload(priority_entry.entry_id)
     await demo_hass.async_block_till_done()
@@ -89,4 +89,4 @@ async def test_unloading_under_a_proxy_leaves_a_pass_through(
         "light", "turn_on", {"entity_id": LIGHT}, blocking=True
     )
     assert demo_hass.states.get(LIGHT).state == "on"
-    assert "could not unwrap light.turn_on" in caplog.text
+    assert "could not unwrap" not in caplog.text

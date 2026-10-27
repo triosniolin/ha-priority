@@ -208,9 +208,73 @@ Home Assistant is running. The house should not argue with someone standing at a
 
 Wall switches, vendor apps and Zigbee group commands are all handled this way.
 
+## Merging with the levels below
+
+By default the winning level takes the whole device. An override that only turns a light on still
+blocks every brightness and color change underneath it, so adaptive or circadian lighting stops
+adjusting until the override is released. That is deliberate (an override exists so automations
+stop fighting you), but it is not always what you meant.
+
+Turn on **Enable merging with lower levels** in the options. Then pass `merge_down: true` on a call,
+or turn on **Merge by default** to make it the norm, and the winning command keeps what it names for
+itself while anything it leaves unset is filled in from the same service at the levels below:
+
+```yaml
+action: light.turn_on
+target:
+  entity_id: light.living_room
+data:
+  priority: 3
+  merge_down: true
+```
+
+With adaptive lighting writing color and brightness at level 7, the light stays on at Manual and
+keeps adapting. Name a brightness in the override and it keeps that brightness while the color still
+follows the levels below. A thermostat held at 72 with `climate.set_temperature` keeps whatever
+`hvac_mode` the schedule below it sets.
+
+A merge only fills gaps in one service call, so it does something where a service carries more than
+one setting:
+
+| Service | Merged groups |
+|---|---|
+| `light.turn_on` | brightness (`brightness`, `brightness_pct`), color (every color field, plus `white`, which also counts as brightness), `transition` |
+| `fan.turn_on` | speed (`percentage` or `preset_mode`) |
+| `climate.set_temperature` | setpoint (`temperature`, or `target_temp_low` and `target_temp_high`), `hvac_mode` |
+| `water_heater.set_temperature` | `temperature`, `operation_mode` |
+
+Every other arbitrated service accepts the field, but its payload has nothing left to fill, so the
+winner is sent as it stands.
+
+The rules, walking down from the winner:
+
+- Only levels holding the same service contribute, and the highest one that names a group wins that
+  group.
+- A level that would turn the device off contributes nothing: a `turn_off`, a light at brightness 0,
+  a fan at 0%, `hvac_mode: "off"` or `operation_mode: "off"`. A lower level can never switch off a
+  device the winner holds on.
+- Anything not in the table above (a light's `effect`, `flash`, `profile` or relative
+  `brightness_step`, for example) stops the walk; nothing at or below that level is merged. A winner
+  carrying one does not merge at all.
+- A level without the flag inherits it from the level above. An explicit `merge_down: false` lower
+  down is merged in and then stops the walk.
+- If the merged command would fail the domain's own validation, the winner is sent alone.
+
+On a dashboard, the more-info picker, the tile card feature and the control card show a **Merge**
+toggle beside the level for any entity with a service in the table. It starts at the Merge by default
+setting and travels with the level you pick, so the next ordinary command carries it.
+
+When a lower level changes something the winner is taking from it, the merged command is sent again,
+so the device follows along. `merge_down: false` on a call holds the whole device the old way even
+with Merge by default on.
+
+With merging disabled nothing merges, the cards drop the toggle and the action editors drop the
+field. A `merge_down` already written into an automation is ignored rather than rejected, so turning
+the feature off never breaks one.
+
 ## Using it in YAML
 
-Every arbitrated service takes two extra fields alongside whatever it already accepts:
+Every arbitrated service takes three extra fields alongside whatever it already accepts:
 
 ```yaml
 action: cover.set_cover_position
@@ -222,9 +286,10 @@ data:
   priority_ttl: "03:00:00"
 ```
 
-Both appear as real form fields in the automation editor, the script editor, Developer Tools and
-button tap actions, so you get a proper dropdown rather than having to remember the YAML. The
-integration rewrites the affected service descriptions at runtime.
+`merge_down`, described above, is the third. All three appear as real form fields in the automation
+editor, the script editor, Developer Tools and button tap actions, so you get a proper dropdown
+rather than having to remember the YAML. The integration rewrites the affected service descriptions
+at runtime.
 
 ## Services
 
@@ -252,6 +317,7 @@ data:
 | `service` | yes | The bare domain service (`turn_on`, `set_temperature`). The domain comes from the target entity. |
 | `data` | no | The payload that service would take |
 | `priority_ttl` | no | Duration. Rejected at level 8. |
+| `merge_down` | no | Overrides Merge by default for this slot. Ignored while merging is disabled. |
 
 Both the service and the payload are validated before anything is written, and every target is
 validated before any slot is written. A slot that cannot dispatch would still win arbitration and
@@ -410,6 +476,8 @@ Set at install time and changeable afterwards from the integration's **Configure
 | Default priority for users | 8 | The level a command gets when a person does not name one |
 | Default priority for automations | 8 | The same, for automations |
 | Track out-of-band changes | on | Record physical switches and vendor apps at Default |
+| Enable merging with lower levels | off | Lets an override fill in what it leaves unset from the levels below; see above |
+| Merge by default | off | Whether an override merges when it does not say `merge_down` itself |
 | Level names | shipped names | Rename any level; see above |
 
 Changing the two default-priority options away from 8 is the one setting that can surprise you, for
@@ -454,6 +522,11 @@ has to catch, and means one relinquish produces exactly one dispatch.
 
 Changes that do not match any dispatch of ours are attributed to the physical world and recorded at
 Default.
+
+Another integration can wrap the same service; Adaptive Lighting does this to `light.turn_on`. The
+wrapper always ends up outermost, whichever loads first: a handler registered over ours is wrapped in
+turn, and the layer it buried passes straight through. Arbitration happens once, on the call as the
+caller made it, and the other integration still sees every command that is actually sent.
 
 ## Caveats
 

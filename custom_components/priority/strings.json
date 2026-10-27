@@ -12,7 +12,9 @@
           "managed_labels": "Labels (only when applying to a selection)",
           "default_user_priority": "Default priority for people",
           "default_automation_priority": "Default priority for automations and scripts",
-          "track_out_of_band": "Record wall-switch and app changes into the Default slot"
+          "track_out_of_band": "Record wall-switch and app changes into the Default slot",
+          "merge_enabled": "Enable merging with lower levels",
+          "merge_down": "Merge by default"
         },
         "sections": {
           "priority_names": {
@@ -39,6 +41,10 @@
               "level_8": "Shipped as Default."
             }
           }
+        },
+        "data_description": {
+          "merge_enabled": "Lets an override fill in what it leaves unset from the levels below it: a light held on keeps the color and brightness adaptive lighting sets underneath, and a thermostat held at a setpoint keeps the mode its schedule sets. When on, the cards show a Merge toggle beside the level and the action editors offer merge_down. When off, nothing merges, neither appears, and a merge_down already in an action is ignored.",
+          "merge_down": "Whether an override merges when it does not say so itself. Only applies while merging is enabled. The Merge toggle on the cards starts here."
         }
       }
     },
@@ -61,7 +67,9 @@
           "managed_labels": "Labels (only when applying to a selection)",
           "default_user_priority": "Default priority for people",
           "default_automation_priority": "Default priority for automations and scripts",
-          "track_out_of_band": "Record wall-switch and app changes into the Default slot"
+          "track_out_of_band": "Record wall-switch and app changes into the Default slot",
+          "merge_enabled": "Enable merging with lower levels",
+          "merge_down": "Merge by default"
         },
         "sections": {
           "priority_names": {
@@ -88,6 +96,10 @@
               "level_8": "Shipped as Default."
             }
           }
+        },
+        "data_description": {
+          "merge_enabled": "Lets an override fill in what it leaves unset from the levels below it: a light held on keeps the color and brightness adaptive lighting sets underneath, and a thermostat held at a setpoint keeps the mode its schedule sets. When on, the cards show a Merge toggle beside the level and the action editors offer merge_down. When off, nothing merges, neither appears, and a merge_down already in an action is ignored.",
+          "merge_down": "Whether an override merges when it does not say so itself. Only applies while merging is enabled. The Merge toggle on the cards starts here."
         }
       }
     },
@@ -129,6 +141,10 @@
         "priority_ttl": {
           "name": "Hold for",
           "description": "How long the slot holds before clearing itself, as seconds or a duration. Omit or use 0 to hold until relinquished. Not valid at priority 8."
+        },
+        "merge_down": {
+          "name": "Merge down",
+          "description": "Fill in what this command leaves unset (a light's color or brightness, a thermostat's mode) from the same service at the levels below it. Omit to use the integration option."
         }
       }
     },

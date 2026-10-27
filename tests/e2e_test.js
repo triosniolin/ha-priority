@@ -660,6 +660,65 @@ const pick = (id) => `#${id}`;
     "a click elsewhere inside the card closes it too"
   );
 
+  console.log("\n-- merge toggle --");
+  const LIGHT_STUB = HASS_STUB.replace(
+    '"switch.pump": { entity_id: "switch.pump", state: "off",',
+    '"light.porch": { entity_id: "light.porch", state: "on", attributes: { friendly_name: "Porch" } },\n    "switch.pump": { entity_id: "switch.pump", state: "off",'
+  ).replace("overrides: {}, priority_levels: {", 'overrides: {}, merge_down: false, merge_services: { light: ["turn_on"] }, priority_levels: {');
+
+  const mergeRow = async (width, compact) => {
+    await page.setContent(`<!doctype html><html><body style="margin:0">
+      <div id="host" style="width: ${width}px;"></div></body></html>`);
+    await page.addScriptTag({ path: CARD });
+    await page.evaluate(`(async () => {
+      window.__calls = [];
+      const row = document.createElement("priority-row");
+      if (${compact}) row.setAttribute("compact", "");
+      document.getElementById("host").appendChild(row);
+      row.hass = ${LIGHT_STUB};
+      row.stateObj = { entity_id: "light.porch" };
+      window.__row = row;
+      await new Promise((r) => setTimeout(r, 50));
+    })()`);
+  };
+
+  await mergeRow(420, false);
+  ok(await page.isVisible("#m"), "a light's row shows the toggle");
+  ok(await page.isDisabled("#m"), "disabled at Default");
+  await page.click(pick("p"));
+  await page.click('.opt[data-v="3"]');
+  ok(!(await page.isDisabled("#m")), "enabled once a level is picked");
+  await page.click("#m");
+  ok((await page.getAttribute("#m", "aria-pressed")) === "true", "a real click turns it on");
+  await page.evaluate(`window.__row.hass.callService("light", "turn_on", { entity_id: "light.porch" })`);
+  const sent = await page.evaluate("window.__calls[window.__calls.length - 1].data");
+  ok(sent.priority === 3 && sent.merge_down === true, `the next command carries it: ${JSON.stringify(sent)}`);
+
+  await mergeRow(230, true);
+  const fit = await page.evaluate(() => {
+    const row = window.__row;
+    const host = document.getElementById("host").getBoundingClientRect();
+    const m = row.shadowRoot.getElementById("m").getBoundingClientRect();
+    return m.width > 0 && m.right <= host.right + 0.5 && m.left >= host.left - 0.5;
+  });
+  ok(fit, "on a 230px tile the toggle fits inside the tile");
+
+  await page.setContent(`<!doctype html><html><body style="margin:0">
+    <div id="host" style="width: 420px;"></div></body></html>`);
+  await page.addScriptTag({ path: CARD });
+  await page.evaluate(`(async () => {
+    window.__calls = [];
+    const card = document.createElement("priority-control-card");
+    card.setConfig({ entities: ["light.porch"], default_priority: 3 });
+    document.getElementById("host").appendChild(card);
+    card.hass = ${LIGHT_STUB};
+    window.__card = card;
+    await new Promise((r) => setTimeout(r, 50));
+  })()`);
+  ok(await page.isVisible("[data-merge]"), "the control card shows it for a light");
+  await page.click("[data-merge]");
+  ok((await page.getAttribute("[data-merge]", "aria-pressed")) === "true", "and a real click turns it on");
+
   await browser.close();
   console.log(fails ? `\n${fails} FAILURES` : "\nall e2e checks passed");
   process.exit(fails ? 1 : 0);

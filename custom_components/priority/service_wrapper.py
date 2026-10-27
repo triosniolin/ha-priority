@@ -1,8 +1,9 @@
 """Wrap arbitrated services by re-registering over them; HA has no service middleware.
 
-The wrapper's schema is the original plus the priority fields, and unmanaged
-targets are forwarded to the original in the same call, so nothing a caller or
-integration relies on changes.
+The wrapper's schema is the original plus the priority fields, and unmanaged targets are forwarded
+to the original in the same call, so nothing a caller or integration relies on changes. We stay the
+outermost handler: a proxy registered over us (Adaptive Lighting) is wrapped in turn, and a
+superseded wrapper passes straight through to what it captured.
 """
 
 from __future__ import annotations
@@ -14,7 +15,13 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.const import ATTR_ENTITY_ID, ENTITY_MATCH_ALL, ENTITY_MATCH_NONE
-from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, callback
+from homeassistant.core import (
+    HomeAssistant,
+    Service,
+    ServiceCall,
+    ServiceResponse,
+    callback,
+)
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import target as target_helpers
@@ -22,26 +29,29 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     ARBITRATED_SERVICES,
+    ATTR_MERGE_DOWN,
     ATTR_PRIORITY,
     ATTR_PRIORITY_TTL,
     MAX_PRIORITY,
     MIN_PRIORITY,
 )
-from .store import PriorityManager, async_inherited, async_run_original
+from .store import Command, PriorityManager, async_inherited, async_run_original
 
 _LOGGER = logging.getLogger(__name__)
 
-# Targeting fields, stripped before a payload becomes a slot or is re-targeted.
-_TARGET_FIELDS = frozenset(
-    {ATTR_ENTITY_ID, ATTR_PRIORITY, ATTR_PRIORITY_TTL, "device_id", "area_id",
-     "floor_id", "label_id", "metadata"}
-)
-
-# Marks a handler as one of ours, so a reload cannot wrap a wrapper.
+# Marks a handler as one of ours and holds the Service it captured.
 _WRAPPER_MARKER = "_priority_wrapper"
 
 # Pre-validation payload: light folds colour into `params`, so validated data can't be revalidated.
 _RAW_KEY = "__priority_raw"
+
+# Every field we add; each must be stripped before the original sees the call, or it arrives as a
+# kwarg (fan.set_percentage raises on one).
+_OUR_FIELDS = frozenset({ATTR_PRIORITY, ATTR_PRIORITY_TTL, ATTR_MERGE_DOWN, _RAW_KEY})
+
+_TARGET_FIELDS = _OUR_FIELDS | {
+    ATTR_ENTITY_ID, "device_id", "area_id", "floor_id", "label_id", "metadata"
+}
 
 PRIORITY_FIELD: dict[Any, Any] = {
     vol.Optional(ATTR_PRIORITY): vol.All(
@@ -50,6 +60,7 @@ PRIORITY_FIELD: dict[Any, Any] = {
     vol.Optional(ATTR_PRIORITY_TTL): vol.Any(
         cv.positive_time_period, vol.All(vol.Coerce(float), vol.Range(min=0))
     ),
+    vol.Optional(ATTR_MERGE_DOWN): cv.boolean,
 }
 
 
@@ -75,14 +86,9 @@ def _extend_schema(schema: Any) -> Any:
         if not isinstance(data, dict):
             return schema(data)
 
-        has_priority = ATTR_PRIORITY in data or ATTR_PRIORITY_TTL in data
-        checked = priority_schema(data) if has_priority else data
+        checked = priority_schema(data) if _OUR_FIELDS & data.keys() else data
 
-        rest = {
-            key: value
-            for key, value in data.items()
-            if key not in (ATTR_PRIORITY, ATTR_PRIORITY_TTL, _RAW_KEY)
-        }
+        rest = {key: value for key, value in data.items() if key not in _OUR_FIELDS}
         validated = schema(rest)
         if not isinstance(validated, dict):
             return validated
@@ -91,8 +97,9 @@ def _extend_schema(schema: Any) -> Any:
         validated[_RAW_KEY] = rest
         if ATTR_PRIORITY in checked:
             validated[ATTR_PRIORITY] = int(checked[ATTR_PRIORITY])
-        if ATTR_PRIORITY_TTL in checked:
-            validated[ATTR_PRIORITY_TTL] = checked[ATTR_PRIORITY_TTL]
+        for key in (ATTR_PRIORITY_TTL, ATTR_MERGE_DOWN):
+            if key in checked:
+                validated[key] = checked[key]
         return validated
 
     return _validate
@@ -117,31 +124,26 @@ def _resolve_targets(hass: HomeAssistant, call: ServiceCall) -> list[str]:
 
 
 def _build_wrapper(
-    hass: HomeAssistant, manager: PriorityManager, domain: str, service: str
+    hass: HomeAssistant,
+    manager: PriorityManager,
+    domain: str,
+    service: str,
+    captured: Service,
 ):
-    captured = manager.async_get_original(domain, service)
-
+    # Each layer forwards to what it captured, never the manager's current original, or a proxy
+    # sitting between two of our layers calls back into the outer one and loops (issue #1).
     async def _wrapped(call: ServiceCall) -> ServiceResponse:
-        original = manager.async_get_original(domain, service)
-        # Unwrapped while a foreign proxy still calls us: pass straight through.
-        orphaned = original is None
-        if orphaned:
-            original = captured
-        if original is None:
-            raise RuntimeError(f"priority lost the original handler for {domain}.{service}")
-
         raw: dict[str, Any] = dict(call.data.get(_RAW_KEY) or call.data)
 
         async def _passthrough(
             entity_ids: list[str] | None = None,
-            command: tuple[int, datetime | None] | None = None,
+            command: tuple[int, datetime | None, bool | None] | None = None,
         ) -> ServiceResponse:
             if entity_ids is None:
-                # Strip our fields: core passes leftovers as kwargs, and fan.set_percentage raises.
                 data = {
                     key: value
                     for key, value in call.data.items()
-                    if key not in (ATTR_PRIORITY, ATTR_PRIORITY_TTL, _RAW_KEY)
+                    if key not in _OUR_FIELDS
                 }
             else:
                 # Re-targeting means re-validating the raw payload.
@@ -152,14 +154,12 @@ def _build_wrapper(
                 }
                 narrowed[ATTR_ENTITY_ID] = entity_ids
                 data = (
-                    original.schema(narrowed)
-                    if original.schema is not None
+                    captured.schema(narrowed)
+                    if captured.schema is not None
                     else narrowed
                 )
                 data = {
-                    key: value
-                    for key, value in data.items()
-                    if key not in (ATTR_PRIORITY, ATTR_PRIORITY_TTL, _RAW_KEY)
+                    key: value for key, value in data.items() if key not in _OUR_FIELDS
                 }
             forwarded = ServiceCall(
                 hass, domain, service, data, call.context, call.return_response
@@ -167,12 +167,14 @@ def _build_wrapper(
             if command is not None:
                 # An excluded group still hands the command on to managed members.
                 return await async_run_original(
-                    hass, original.job, forwarded, *command
+                    hass, captured.job, forwarded, *command
                 )
-            task = hass.async_run_hass_job(original.job, forwarded)
+            task = hass.async_run_hass_job(captured.job, forwarded)
             return await task if task is not None else None
 
-        if orphaned:
+        # Superseded by a wrapper over a proxy, or unwrapped under one: the outer layer arbitrated.
+        current = hass.services.async_services_internal().get(domain, {}).get(service)
+        if current is None or current.job.target is not _wrapped:
             return await _passthrough()
 
         targets = _resolve_targets(hass, call)
@@ -191,18 +193,21 @@ def _build_wrapper(
 
         ttl = _ttl_seconds(call.data.get(ATTR_PRIORITY_TTL))
         expires_at = dt_util.utcnow() + timedelta(seconds=ttl) if ttl else None
+        merge_down = call.data.get(ATTR_MERGE_DOWN)
         if ATTR_PRIORITY in call.data:
             priority = call.data[ATTR_PRIORITY]
         elif (inherited := async_inherited(call.context)) is not None:
             # A group forwarding to its members, from inside our dispatch of the group.
-            priority, inherited_expiry = inherited
+            priority, inherited_expiry, inherited_merge = inherited
             if expires_at is None:
                 expires_at = inherited_expiry
+            if merge_down is None:
+                merge_down = inherited_merge
         else:
             priority = manager.async_default_priority(call.context)
 
         if not managed:
-            return await _passthrough(command=(priority, expires_at))
+            return await _passthrough(command=(priority, expires_at, merge_down))
 
         if ttl is not None and priority == MAX_PRIORITY:
             raise ServiceValidationError(
@@ -213,21 +218,33 @@ def _build_wrapper(
 
         # Grouped by resolved service: toggle can resolve differently per entity.
         winners: dict[str, list[str]] = defaultdict(list)
+        merged: list[str] = []
+        losers: list[tuple[str, Command | None]] = []
         for entity_id in managed:
             resolved = manager.async_resolve_service(domain, service, entity_id)
             array = manager.async_get_array(entity_id)
             takes_control = array.wins(priority)
             previous = array.effective_priority()
+            before = None if takes_control else manager.async_command(entity_id)
             manager.async_write_slot(
                 entity_id,
                 priority,
                 manager.async_make_slot(
-                    domain, resolved, raw, call.context, expires_at=expires_at
+                    domain,
+                    resolved,
+                    raw,
+                    call.context,
+                    expires_at=expires_at,
+                    merge_down=merge_down,
                 ),
             )
             manager.async_notify(entity_id)
             if takes_control:
-                winners[resolved].append(entity_id)
+                command = manager.async_command(entity_id)
+                if command is not None and command.data != array.get(priority).data:
+                    merged.append(entity_id)
+                else:
+                    winners[resolved].append(entity_id)
                 if priority < MAX_PRIORITY and previous != priority:
                     lease = ""
                     if expires_at:
@@ -240,6 +257,7 @@ def _build_wrapper(
                         call.context,
                     )
             else:
+                losers.append((entity_id, before))
                 _LOGGER.debug(
                     "Priority %s call to %s.%s on %s recorded but not dispatched; "
                     "priority %s holds control",
@@ -251,7 +269,7 @@ def _build_wrapper(
                 )
 
         if unmanaged:
-            await _passthrough(unmanaged, (priority, expires_at))
+            await _passthrough(unmanaged, (priority, expires_at, merge_down))
 
         command_data = {
             key: value for key, value in raw.items() if key not in _TARGET_FIELDS
@@ -265,10 +283,15 @@ def _build_wrapper(
                 priority,
                 call.context,
                 expires_at,
+                merge_down,
             )
+        for entity_id in merged:
+            await manager.async_drive_effective(entity_id, call.context)
+        for entity_id, before in losers:
+            await manager.async_drive_if_changed(entity_id, before, call.context)
         return None
 
-    setattr(_wrapped, _WRAPPER_MARKER, True)
+    setattr(_wrapped, _WRAPPER_MARKER, captured)
     return _wrapped
 
 
@@ -282,18 +305,17 @@ def async_wrap_service(
     existing = registry.get(domain, {}).get(service)
     if existing is None:
         return False
-    if getattr(existing.job.target, _WRAPPER_MARKER, False):
-        return False
-    # A proxy registered over our wrapper still calls it; re-wrapping would store the
-    # proxy as our original and loop (issue #1). Removal forgets the original.
-    if manager.async_get_original(domain, service) is not None:
+    if (ours := getattr(existing.job.target, _WRAPPER_MARKER, None)) is not None:
+        # Ours is on top again (a proxy put back what it captured); dispatch through its layer.
+        manager.async_store_original(domain, service, ours)
         return False
 
+    # Anything else on top, including a proxy over our wrapper, gets wrapped in turn.
     manager.async_store_original(domain, service, existing)
     hass.services.async_register(
         domain,
         service,
-        _build_wrapper(hass, manager, domain, service),
+        _build_wrapper(hass, manager, domain, service, existing),
         schema=_extend_schema(existing.schema),
         supports_response=existing.supports_response,
     )

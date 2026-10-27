@@ -12,6 +12,26 @@ const PRIORITY_COLORS = {
   8: "var(--secondary-text-color)",
 };
 
+// HA 2026.10 swaps in a scoped-registry polyfill after extra modules run; Lovelace asks it, and it
+// never sees a native define, so register again once the swap happens.
+const _DEFINED = [];
+
+function _define(tag, Cls) {
+  _DEFINED.push([tag, Cls]);
+  if (!customElements.get(tag)) customElements.define(tag, Cls);
+}
+
+function _followRegistry(registry, tries) {
+  const current = window.customElements;
+  if (current !== registry) {
+    for (const [tag, Cls] of _DEFINED) {
+      if (!current.get(tag)) current.define(tag, Cls);
+    }
+    return;
+  }
+  if (tries > 0) setTimeout(() => _followRegistry(registry, tries - 1), 50);
+}
+
 // Names are the user's, published by the overrides sensor; this stands in until it is read.
 let LEVELS = _makeLevels(null);
 
@@ -36,12 +56,24 @@ function _makeLevels(raw) {
 // The highest level is Default, so callers ask for it here rather than naming a number.
 function _levels(hass) {
   const st = hass && hass.states && hass.states["sensor.active_overrides"];
-  const raw = st && st.attributes && st.attributes.priority_levels;
+  const attrs = (st && st.attributes) || {};
+  const raw = attrs.priority_levels;
   if (raw && typeof raw === "object") {
     const next = _makeLevels(raw);
     if (next.sig !== LEVELS.sig) LEVELS = next;
   }
+  if (attrs.merge_services && typeof attrs.merge_services === "object") {
+    MERGE = { on: attrs.merge_down === true, services: attrs.merge_services };
+  }
   return LEVELS;
+}
+
+// Published by the overrides sensor: the option's value, and which services have anything to merge.
+let MERGE = { on: false, services: {} };
+
+function _canMerge(entityId) {
+  const list = MERGE.services[String(entityId || "").split(".")[0]];
+  return Array.isArray(list) && list.length > 0;
 }
 
 // Entity names and states come from devices and discovery, so never trust them as markup.
@@ -275,7 +307,7 @@ class PriorityOverridesCard extends HTMLElement {
   }
 }
 
-customElements.define("priority-overrides-card", PriorityOverridesCard);
+_define("priority-overrides-card", PriorityOverridesCard);
 
 window.customCards = window.customCards || [];
 window.customCards.push({
@@ -343,6 +375,7 @@ class PriorityControlCard extends HTMLElement {
       ...config,
     };
     this._priority = Number(this._config.default_priority) || 3;
+    this._merge = null;
     this._levelsSig = null;
     this._ttl = Number(this._config.default_ttl) || 0;
     this._root = null;
@@ -386,7 +419,27 @@ class PriorityControlCard extends HTMLElement {
     if (this._ttl > 0 && this._priority < LEVELS.max) {
       data.priority_ttl = this._ttl;
     }
+    if (this._showsMerge() && this._priority < LEVELS.max) data.merge_down = this._mergeOn();
     this._hass.callService(domain, which === "on" ? acts.on : acts.off, data);
+  }
+
+  _showsMerge() {
+    return (this._config.entities || []).some(_canMerge);
+  }
+
+  // Follows the option until someone taps it.
+  _mergeOn() {
+    return this._merge === null ? MERGE.on : this._merge;
+  }
+
+  _paintMerge() {
+    const btn = this._controls && this._controls.querySelector("[data-merge]");
+    if (!btn) return;
+    const on = this._mergeOn();
+    if (btn.setAttribute) btn.setAttribute("aria-pressed", on ? "true" : "false");
+    if (btn.classList) btn.classList.toggle("on", on);
+    btn.textContent = on ? "Merge with levels below" : "Whole device";
+    btn.disabled = this._priority >= LEVELS.max;
   }
 
   _release(entityId) {
@@ -478,6 +531,18 @@ class PriorityControlCard extends HTMLElement {
         }
         .controls .opt:hover { background: var(--secondary-background-color); }
         .controls .opt.sel { font-weight: 600; color: var(--primary-color); }
+        .controls .merge {
+          padding: 8px;
+          border-radius: 6px;
+          border: 1px solid var(--divider-color);
+          background: var(--card-background-color, var(--ha-card-background));
+          color: var(--primary-text-color);
+          font: inherit;
+          min-height: 36px;
+          cursor: pointer;
+        }
+        .controls .merge.on { border-color: var(--primary-color); color: var(--primary-color); }
+        .controls .merge[disabled] { opacity: 0.5; cursor: default; }
         .note {
           padding: 0 16px 8px;
           font-size: 0.75rem;
@@ -522,10 +587,12 @@ class PriorityControlCard extends HTMLElement {
       this.appendChild(this._root);
     }
     // Rebuilt only on a rename, which is rare enough to close an open list.
-    if (this._levelsSig !== LEVELS.sig) {
-      this._levelsSig = LEVELS.sig;
+    const sig = LEVELS.sig + this._showsMerge();
+    if (this._levelsSig !== sig) {
+      this._levelsSig = sig;
       this._renderControls();
     }
+    this._paintMerge();
     this._renderRows();
   }
 
@@ -560,7 +627,20 @@ class PriorityControlCard extends HTMLElement {
 
     this._controls.innerHTML = `
       ${this._fieldMarkup("p", "Priority", this._prioItems, this._priority)}
-      ${this._fieldMarkup("t", "Hold for", this._ttlItems, this._ttl)}`;
+      ${this._fieldMarkup("t", "Hold for", this._ttlItems, this._ttl)}
+      ${
+        this._showsMerge()
+          ? `<div class="field"><label>Unset settings</label><button type="button" class="merge"
+               data-merge="1" title="Fill in what a command leaves unset from the levels below it"></button></div>`
+          : ""
+      }`;
+    const merge = this._controls.querySelector("[data-merge]");
+    if (merge) {
+      merge.onclick = () => {
+        this._merge = !this._mergeOn();
+        this._paintMerge();
+      };
+    }
 
     this._wireField("p", () => this._prioItems, (v) => {
       this._priority = v;
@@ -612,6 +692,7 @@ class PriorityControlCard extends HTMLElement {
           apply(v);
           close();
           this._paintFieldLabel(key, items());
+          this._paintMerge();
           // Re-rendering the controls would tear out the button just tapped.
           this._renderRows();
         };
@@ -700,7 +781,7 @@ class PriorityControlCard extends HTMLElement {
   }
 }
 
-customElements.define("priority-control-card", PriorityControlCard);
+_define("priority-control-card", PriorityControlCard);
 
 window.customCards.push({
   type: "priority-control-card",
@@ -781,7 +862,7 @@ const ARBITRATED_SERVICES = {
 
 /* ---- Command interception: pickers modify the entity's own controls via callService ---- */
 
-// entity_id -> { priority, ttl }. Default is never stored, so an empty map means pure pass-through.
+// entity_id -> { priority, ttl, merge }. Default is never stored, so an empty map is a pass-through.
 const SELECTIONS = new Map();
 
 function _isArbitrated(domain, service) {
@@ -811,10 +892,11 @@ function _wrapCallService(hass) {
         const sel = ids.length ? SELECTIONS.get(ids[0]) : undefined;
         // One priority field covers every target, so a mixed call gets none.
         const same = (o) =>
-          o && o.priority === sel.priority && o.ttl === sel.ttl;
+          o && o.priority === sel.priority && o.ttl === sel.ttl && o.merge === sel.merge;
         if (sel && ids.every((id) => same(SELECTIONS.get(id)))) {
           data = { ...(data || {}), priority: sel.priority };
           if (sel.ttl > 0 && sel.priority < LEVELS.max) data.priority_ttl = sel.ttl;
+          if (typeof sel.merge === "boolean") data.merge_down = sel.merge;
         }
       }
     } catch (err) {
@@ -904,6 +986,15 @@ const ROW_STYLE = `
     white-space: nowrap;
   }
   .caret { font-size: 0.7em; opacity: 0.7; }
+  .merge {
+    padding: 6px 10px;
+    border-radius: 6px;
+    min-height: 36px;
+    white-space: nowrap;
+  }
+  .merge.on { border-color: var(--primary-color); color: var(--primary-color); }
+  .merge[disabled] { opacity: 0.5; cursor: default; }
+  .merge[hidden] { display: none; }
   /* Inline, not an overlay: more-info has nothing dependable to position against. */
   .menu {
     display: grid;
@@ -1046,6 +1137,7 @@ const ROW_STYLE = `
     min-height: 28px;
   }
   :host([compact]) button { font-size: 0.8rem; padding: 4px 10px; }
+  :host([compact]) .merge { flex: 0 0 auto; min-height: 28px; padding: 3px 8px; }
 `;
 
 const SERVICE_LABELS = {
@@ -1129,6 +1221,8 @@ class PriorityRow extends HTMLElement {
     // Opening a dialog must never arm an override.
     this._priority = LEVELS.max;
     this._ttl = 0;
+    // null follows the option until tapped.
+    this._merge = null;
     this._array = null;
     this._built = false;
     // Nothing rewrites the row while a menu is open, so it is never torn out mid-tap.
@@ -1160,8 +1254,13 @@ class PriorityRow extends HTMLElement {
     // A new hass object arrives on every state change.
     _wrapCallService(hass);
     const prevMax = LEVELS.max;
+    const prevMerge = MERGE.on;
     _levels(hass);
     if (LEVELS.max !== prevMax && this._priority === prevMax) this._priority = LEVELS.max;
+    // An armed row following the option has to re-arm when the option changes.
+    if (MERGE.on !== prevMerge && this._merge === null && this._armedSel) {
+      this._select(this._priority, this._ttl);
+    }
     // A rename relabels the pickers; wait for a closed menu so none is torn out mid-tap.
     if (this._built && this._builtSig !== LEVELS.sig && !this._menuOpen) {
       this._built = false;
@@ -1188,6 +1287,7 @@ class PriorityRow extends HTMLElement {
       // A level armed for one entity must not follow the row to another.
       this._priority = LEVELS.max;
       this._ttl = 0;
+      this._merge = null;
       this._select(this._priority, this._ttl);
       this._array = null;
       this._built = false;
@@ -1228,6 +1328,7 @@ class PriorityRow extends HTMLElement {
     const id = this._entityId();
     if (!id || priority >= LEVELS.max) return;
     const sel = { priority, ttl };
+    if (_canMerge(id)) sel.merge = this._mergeOn();
     this._armed = [id, ...this._members(id)];
     this._armedSel = sel;
     this._armed.forEach((i) => SELECTIONS.set(i, sel));
@@ -1249,6 +1350,7 @@ class PriorityRow extends HTMLElement {
     // Disarm too, or the next tap writes a fresh override straight back.
     this._priority = LEVELS.max;
     this._ttl = 0;
+    this._merge = null;
     this._select(this._priority, this._ttl);
     this._closeMenus();
     this._paintPickerLabel("p", this._prioItems);
@@ -1312,6 +1414,9 @@ class PriorityRow extends HTMLElement {
           this._ttlItems,
           this._ttl
         )}
+        <button type="button" class="merge" id="m" aria-pressed="false"
+                title="On: settings this command leaves unset come from the levels below. Off: it takes the whole device."
+                hidden>Merge</button>
         <span id="rel-wrap"></span>
         </div>
         ${_menuMarkup("p", this._prioItems, this._priority)}
@@ -1329,6 +1434,14 @@ class PriorityRow extends HTMLElement {
     this._wirePicker("t", () => this._ttlItems, (v) => {
       this._ttl = v;
     });
+    const merge = this.shadowRoot.getElementById("m");
+    if (merge) {
+      merge.onclick = () => {
+        this._merge = !this._mergeOn();
+        this._select(this._priority, this._ttl);
+        this._paintStatus();
+      };
+    }
 
     this._built = true;
     this._paintStatus();
@@ -1415,13 +1528,23 @@ class PriorityRow extends HTMLElement {
 
     const t = $("t");
     if (t) t.disabled = !armed;
+    const m = $("m");
+    if (m) {
+      const on = this._mergeOn();
+      // The sensor that says which services merge can arrive after the row is built.
+      m.hidden = !_canMerge(this._entityId());
+      m.disabled = !armed;
+      if (m.setAttribute) m.setAttribute("aria-pressed", on ? "true" : "false");
+      if (m.classList) m.classList.toggle("on", on);
+    }
 
     const hint = $("hint");
     if (hint && !this._compact()) {
+      const merging = _canMerge(this._entityId()) && this._mergeOn();
       hint.textContent = armed
         ? `Controls above will command at ${LEVELS.names[this._priority]}${
-            this._ttl > 0 ? "" : ", until released"
-          }.`
+            merging ? ", filling unset settings from the levels below" : ""
+          }${this._ttl > 0 ? "" : ", until released"}.`
         : "Normal behaviour. The last command wins.";
     }
 
@@ -1448,6 +1571,10 @@ class PriorityRow extends HTMLElement {
 
   _compact() {
     return !!(this.hasAttribute && this.hasAttribute("compact"));
+  }
+
+  _mergeOn() {
+    return this._merge === null ? MERGE.on : this._merge;
   }
 
   // Arming feedback first, since it describes the next tap; then whatever holds the entity.
@@ -1574,7 +1701,7 @@ class PriorityRow extends HTMLElement {
   }
 }
 
-customElements.define("priority-row", PriorityRow);
+_define("priority-row", PriorityRow);
 
 
 /* ---- Tile-card feature: a supported extension point, and the fallback if more-info breaks.
@@ -1643,7 +1770,7 @@ class PriorityTileFeature extends HTMLElement {
   }
 }
 
-customElements.define("priority-feature", PriorityTileFeature);
+_define("priority-feature", PriorityTileFeature);
 
 window.customCardFeatures = window.customCardFeatures || [];
 window.customCardFeatures.push({
@@ -1710,6 +1837,7 @@ function _patchMoreInfo() {
 }
 
 _patchMoreInfo();
+_followRegistry(window.customElements, 600);
 
 // For the node test harness; the UI never reads these.
 window.__priorityInternals = {
