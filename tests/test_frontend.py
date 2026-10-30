@@ -68,6 +68,32 @@ async def test_existing_fields_are_preserved(priority_entry, demo_hass) -> None:
     assert descriptions["climate"]["set_temperature"]["fields"].get("temperature")
 
 
+async def test_targets_survive_patch_and_unload(demo_hass, entry_options) -> None:
+    """Issue #6: on 2026.10+ a feature-filtered target (fan, cover) was dropped from the editor."""
+    before = await async_get_all_descriptions(demo_hass)
+
+    entry = MockConfigEntry(domain=DOMAIN, options=entry_options, unique_id=DOMAIN)
+    entry.add_to_hass(demo_hass)
+    assert await demo_hass.config_entries.async_setup(entry.entry_id)
+    await demo_hass.async_block_till_done()
+    wrapped = entry.runtime_data.async_originals()
+    assert ("fan", "turn_on") in wrapped
+    assert ("cover", "open_cover") in wrapped
+
+    for phase in ("patched", "unloaded"):
+        if phase == "unloaded":
+            assert await demo_hass.config_entries.async_unload(entry.entry_id)
+            await demo_hass.async_block_till_done()
+        now = await async_get_all_descriptions(demo_hass)
+        for domain, service in wrapped:
+            original = (before.get(domain) or {}).get(service) or {}
+            if "target" in original:
+                current = now[domain][service]
+                assert current.get("target") == original["target"], (
+                    f"{domain}.{service} target {phase}"
+                )
+
+
 async def test_descriptions_restored_on_unload(demo_hass, entry_options) -> None:
     """Unload must leave the frontend exactly as it found it."""
     before = (await async_get_all_descriptions(demo_hass))["light"]["turn_on"]

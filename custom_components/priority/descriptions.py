@@ -11,12 +11,18 @@ import copy
 import logging
 from typing import Any
 
-from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.const import (
+    EVENT_HOMEASSISTANT_STARTED,
+    MAJOR_VERSION,
+    MINOR_VERSION,
+)
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.service import (
     async_get_all_descriptions,
     async_set_service_schema,
 )
+from homeassistant.loader import async_get_integration
+from homeassistant.util.yaml import load_yaml_dict
 
 from .const import (
     ATTR_PRIORITY,
@@ -28,6 +34,10 @@ from .const import (
 from .store import PriorityManager
 
 _LOGGER = logging.getLogger(__name__)
+
+# 2026.10 re-validates the target in the setter, and a validated one with supported_features (ints
+# by then) fails that schema and is dropped, so the setter must be handed the services.yaml form.
+_SETTER_VALIDATES_TARGET = (MAJOR_VERSION, MINOR_VERSION) >= (2026, 10)
 
 
 def _priority_fields(names: dict[int, str]) -> dict[str, Any]:
@@ -83,6 +93,25 @@ _MERGE_FIELD: dict[str, Any] = {
 }
 
 
+async def _async_raw_targets(
+    hass: HomeAssistant, domain: str
+) -> dict[str, Any]:
+    """Each service's target exactly as written in the domain's services.yaml."""
+    try:
+        integration = await async_get_integration(hass, domain)
+        raw = await hass.async_add_executor_job(
+            load_yaml_dict, str(integration.file_path / "services.yaml")
+        )
+    except Exception:  # noqa: BLE001 - fall back to the validated target
+        _LOGGER.debug("Priority could not read services.yaml for %s", domain)
+        return {}
+    return {
+        service: spec["target"]
+        for service, spec in raw.items()
+        if isinstance(spec, dict) and "target" in spec
+    }
+
+
 async def async_patch_descriptions(
     hass: HomeAssistant, manager: PriorityManager, *, retry: bool = True
 ) -> None:
@@ -114,6 +143,7 @@ async def async_patch_descriptions(
 
     fields = _priority_fields(manager.priority_names)
     stored = manager.async_descriptions()
+    raw_targets: dict[str, dict[str, Any]] = {}
     patched = 0
     for domain, service in manager.async_originals():
         original = stored.get((domain, service))
@@ -122,6 +152,11 @@ async def async_patch_descriptions(
             if existing is None:
                 continue
             original = copy.deepcopy(existing)
+            if _SETTER_VALIDATES_TARGET and "target" in original:
+                if domain not in raw_targets:
+                    raw_targets[domain] = await _async_raw_targets(hass, domain)
+                if (raw := raw_targets[domain].get(service)) is not None:
+                    original["target"] = copy.deepcopy(raw)
             manager.async_store_description(domain, service, original)
 
         updated = copy.deepcopy(original)
